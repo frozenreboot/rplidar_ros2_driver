@@ -1,0 +1,21 @@
+# 빌드 산출물 (쓰레기)
+build/
+install/
+log/
+
+# IDE 설정 파일 (나만 쓰는 거)
+.vscode/
+.cache/
+.idea/
+
+# 컴파일 명령서 (빌드 때마다 바뀜)
+compile_commands.json
+
+# 시스템 파일
+.DS_Store
+
+# 파이썬 캐시 (나중에 launch 파일 만들면 생김)
+__pycache__/
+*.pyc
+
+
