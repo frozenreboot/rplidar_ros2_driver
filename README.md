@@ -1,4 +1,5 @@
 # Modern C++ RPLidar ROS2 Driver (Lifecycle & Threading)
+[![Tech Blog](https://img.shields.io/badge/Blog-Tech_Log-black?logo=github&logoColor=white)](https://frozenreboot.github.io/)
 
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-blue)
 ![C++17](https://img.shields.io/badge/C++-17-green)
