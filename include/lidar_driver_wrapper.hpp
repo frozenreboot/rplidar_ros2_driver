@@ -38,7 +38,7 @@
  * the hardware SDK from the ROS2 node logic. It includes a real driver 
  * implementation using the Slamtec SDK and a dummy driver for simulation.
  * @author frozenreboot (frozenreboot@gmail.com)
- * @date 2025-12-07
+ * @date 2025-12-13
  */
 
 #ifndef LIDAR_DRIVER_WRAPPER_HPP_
@@ -74,6 +74,23 @@ public:
     virtual void disconnect() = 0;
 
     /**
+     * @brief Checks if the driver is currently connected to hardware.
+     * @return true if connected.
+     */
+    virtual bool isConnected() = 0;
+
+    /**
+     * @brief Checks the health status of the device.
+     * @return 0: OK, 1: Warning, 2: Error
+     */
+    virtual int getHealth() = 0;
+
+    /**
+     * @brief Performs a hardware reset (used for recovery).
+     */
+    virtual void reset() = 0;
+
+    /**
      * @brief Starts the Lidar motor and begins the scanning process.
      * @return true if the motor started successfully, false otherwise.
      */
@@ -104,13 +121,18 @@ public:
 
     bool connect(const std::string& port, sl_u32 baudrate) override;
     void disconnect() override;
+    bool isConnected() override;
+    int getHealth() override;
+    void reset() override;
     bool start_motor() override;
     void stop_motor() override;
     bool grab_scan_data(std::vector<sl_lidar_response_measurement_node_hq_t>& nodes) override;
 
 private:
     /// @brief Raw pointer to the Slamtec SDK driver instance.
-    sl::ILidarDriver* drv_ = nullptr; 
+    sl::ILidarDriver *drv_ = nullptr;
+    sl_lidar_response_device_info_t devinfo_; 
+    bool is_s_series() { return (devinfo_.model >> 4) >= 5; }
 };
 
 /**
@@ -126,6 +148,9 @@ public:
 
     bool connect(const std::string& port, sl_u32 baudrate) override;
     void disconnect() override;
+    bool isConnected() override;
+    int getHealth() override;
+    void reset() override;
     bool start_motor() override;
     void stop_motor() override;
     bool grab_scan_data(std::vector<sl_lidar_response_measurement_node_hq_t>& nodes) override;

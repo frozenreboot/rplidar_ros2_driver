@@ -1,9 +1,9 @@
 rplidar_node:
   ros__parameters:
     serial_port: '/dev/ttyUSB0'
-    serial_baudrate: 115200  # A1/A2는 115200, A3/S1 등은 256000 확인 필요
+    serial_baudrate: 1000000  # A1/A2는 115200, A3/S1 등은 256000 확인 필요
     frame_id: 'laser_frame'
     inverted: false
     angle_compensate: true
     scan_mode: 'Standard'
-    dummy_mode: true  # true로 하면 하드웨어 없이 돌아감
+    dummy_mode: false  # true로 하면 하드웨어 없이 돌아감
