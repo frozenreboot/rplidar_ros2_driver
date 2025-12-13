@@ -35,8 +35,9 @@
 /**
  * @file lidar_driver_wrapper.cpp
  * @brief Implementation of the LidarDriverInterface for Slamtec RPLidar.
+ * @details Implements secure and optimized hardware interactions using the Slamtec SDK.
  * @author frozenreboot (frozenreboot@gmail.com)
- * @date 2025-12-07
+ * @date 2025-12-13
  */
 
 #include "lidar_driver_wrapper.hpp"
@@ -44,6 +45,8 @@
 #include <cmath>
 #include <thread>
 #include <chrono>
+
+using namespace sl;
 
 // ==========================================
 // Real Lidar Driver Implementation
@@ -65,8 +68,11 @@ RealLidarDriver::~RealLidarDriver() {
 bool RealLidarDriver::connect(const std::string& port, sl_u32 baudrate) {
     if (!drv_) return false;
 
-    // Create a serial channel and attempt connection
-    sl::IChannel* channel = *sl::createSerialPortChannel(port, baudrate);
+    // Create serial channel
+    IChannel* channel = *createSerialPortChannel(port, baudrate);
+    if (!channel) return false;
+
+    // Attempt connection
     if (SL_IS_FAIL(drv_->connect(channel))) {
         return false;
     }
@@ -79,42 +85,65 @@ void RealLidarDriver::disconnect() {
     }
 }
 
-bool RealLidarDriver::start_motor() {
+bool RealLidarDriver::isConnected() {
     if (!drv_) return false;
+    return drv_->isConnected();
+}
+
+int RealLidarDriver::getHealth() {
+    if (!isConnected()) return 2; // Error
+
+    sl_lidar_response_device_health_t health_info;
+    auto res = drv_->getHealth(health_info);
+
+    if (SL_IS_FAIL(res)) return 2; // Communication Failed
+
+    if (health_info.status == SL_LIDAR_STATUS_ERROR) return 2;
+    if (health_info.status == SL_LIDAR_STATUS_WARNING) return 1;
+    return 0; // OK
+}
+
+void RealLidarDriver::reset() {
+    if (isConnected()) {
+        drv_->reset();
+    }
+}
+
+bool RealLidarDriver::start_motor() {
+    // Strict check: Must be connected to start motor
+    if (!isConnected()) return false;
 
     // Set motor speed (PWM) and start standard scanning mode
     drv_->setMotorSpeed(); 
-    sl_result ans = drv_->startScan(0, 1);
-    return SL_IS_OK(ans);
+    auto res = drv_->startScan(0, 1);
+    return SL_IS_OK(res);
 }
 
 void RealLidarDriver::stop_motor() {
-    if (drv_) {
+    if (isConnected()) {
         drv_->stop();
         drv_->setMotorSpeed(0);
     }
 }
 
 bool RealLidarDriver::grab_scan_data(std::vector<sl_lidar_response_measurement_node_hq_t>& nodes) {
-    if (!drv_) return false;
+    // Strict check
+    if (!isConnected()) return false;
 
     // Buffer for raw SDK data (8192 is a safe upper bound for single scan points)
-    sl_lidar_response_measurement_node_hq_t nodes_array[8192];
-    size_t count = sizeof(nodes_array) / sizeof(nodes_array[0]);
+    sl_lidar_response_measurement_node_hq_t raw_nodes[8192];
+    size_t count = sizeof(raw_nodes) / sizeof(raw_nodes[0]);
 
-    // Blocking call to fetch scan data
-    sl_result op_result = drv_->grabScanDataHq(nodes_array, count);
+    // Blocking call to fetch scan data (with internal timeout)
+    auto res = drv_->grabScanDataHq(raw_nodes, count);
 
-    if (SL_IS_OK(op_result)) {
-        // Optimize data (sort by angle, etc.)
-        drv_->ascendScanData(nodes_array, count);
+    if (SL_IS_OK(res)) {
+        // Optimize data order (sort by angle, etc.)
+        drv_->ascendScanData(raw_nodes, count);
         
-        // Copy to output vector
-        nodes.clear();
-        nodes.reserve(count);
-        for (size_t i = 0; i < count; ++i) {
-            nodes.push_back(nodes_array[i]);
-        }
+        // [Optimization] Mass copy using assign instead of loop
+        // This utilizes memory copy for POD types, much faster than push_back loop.
+        nodes.assign(raw_nodes, raw_nodes + count);
         return true;
     }
     return false;
@@ -126,18 +155,27 @@ bool RealLidarDriver::grab_scan_data(std::vector<sl_lidar_response_measurement_n
 // ==========================================
 
 bool DummyLidarDriver::connect(const std::string& port, sl_u32 baudrate) {
-    // Suppress unused parameter warnings
-    (void)port; (void)baudrate;
-    // Always succeed for dummy mode
-    return true; 
+    (void)port; (void)baudrate; // Suppress unused warnings
+    return true; // Always succeed
 }
 
 void DummyLidarDriver::disconnect() {
-    // No-op for dummy driver
+    // No-op
+}
+
+bool DummyLidarDriver::isConnected() {
+    return true;
+}
+
+int DummyLidarDriver::getHealth() {
+    return 0; // Always Healthy
+}
+
+void DummyLidarDriver::reset() {
+    // No-op
 }
 
 bool DummyLidarDriver::start_motor() {
-    // Immediately "start"
     return true; 
 }
 
@@ -151,24 +189,21 @@ bool DummyLidarDriver::grab_scan_data(std::vector<sl_lidar_response_measurement_
     int count = 360; // 1 point per degree
     nodes.reserve(count);
 
-    // Static phase to animate the wave over time
     static float phase = 0.0f;
     phase += 0.1f;
 
     for (int i = 0; i < count; ++i) {
         sl_lidar_response_measurement_node_hq_t node;
         
-        // Calculate angle in SDK units (Q14 fixed point)
-        // SDK: angle_q14 = degree * 16384 / 90
+        // SDK Unit: angle_q14 = degree * 16384 / 90
         node.angle_z_q14 = ((float)i * 16384.0f / 90.0f); 
         
-        // Generate distance: 2 meters + sine wave fluctuation
+        // SDK Unit: dist_mm_q2 = mm * 4
+        // Logic: 2 meters + sine wave fluctuation
         float dist_meters = 2.0f + 0.5f * sin((float)i * M_PI / 180.0f + phase);
-        
-        // Calculate distance in SDK units (mm * 4)
         node.dist_mm_q2 = (sl_u32)(dist_meters * 1000.0f * 4.0f);
         
-        node.quality = 10 << 2; // Arbitrary quality > 0
+        node.quality = 10 << 2; 
         nodes.push_back(node);
     }
     
