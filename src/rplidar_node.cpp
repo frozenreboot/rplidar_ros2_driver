@@ -37,13 +37,15 @@
  * @details Handles ROS2 parameter loading, driver instantiation (Factory Pattern),
  * and the main scanning loop within a dedicated thread.
  * @author frozenreboot (frozenreboot@gmail.com)
- * @date 2025-12-13
+ * @date 2025-12-24
  */
 
 #include "rplidar_node.hpp"
 #include <chrono>
 #include <cmath>
 #include <thread>
+#include <vector>
+#include <limits>
 
 using namespace std::chrono_literals;
 
@@ -59,15 +61,26 @@ RPlidarNode::RPlidarNode(const rclcpp::NodeOptions& options)
     this->declare_parameter<bool>("dummy_mode", false); 
     this->declare_parameter<std::string>("scan_mode", "");
 
-    RCLCPP_INFO(this->get_logger(), "RPlidarNode created. Ready for Lifecycle.");
+    RCLCPP_INFO(this->get_logger(), "[Lifecycle] Node created. Waiting for configuration.");
 }
 
 RPlidarNode::~RPlidarNode() {
-    // Ensure the scanning thread is properly joined before destruction
+    RCLCPP_INFO(this->get_logger(), "[Lifecycle] Destroying node resources...");
+
+    // 1. Terminate the scanning thread safely
+    is_scanning_ = false;
     if (scan_thread_.joinable()) {
-        is_scanning_ = false;
         scan_thread_.join();
     }
+
+    // 2. Stop motor and disconnect driver
+    if (driver_) {
+        RCLCPP_INFO(this->get_logger(), "[Driver] Stopping motor during destruction...");
+        driver_->stop_motor();
+        driver_->disconnect();
+    }
+    
+    // driver_ is a unique_ptr, so memory is automatically released here.
 }
 
 // ========================================================================================
@@ -75,21 +88,23 @@ RPlidarNode::~RPlidarNode() {
 // ========================================================================================
 
 RPlidarNode::CallbackReturn RPlidarNode::on_configure(const rclcpp_lifecycle::State &) {
-    RCLCPP_INFO(this->get_logger(), "Configuring node...");
+    RCLCPP_INFO(this->get_logger(), "[Lifecycle] Configuring node...");
     init_parameters(); 
 
-    // Factory Pattern: Create Real or Dummy driver based on parameter
+    // Factory Pattern: Instantiate the appropriate driver based on configuration
     if (params_.dummy_mode) {
-        RCLCPP_WARN(this->get_logger(), "!!! DUMMY MODE ENABLED !!!");
+        RCLCPP_WARN(this->get_logger(), "!!! DUMMY MODE ENABLED - USING SYNTHETIC DATA !!!");
         driver_ = std::make_unique<DummyLidarDriver>();
     } else {
         driver_ = std::make_unique<RealLidarDriver>();
     }
 
-    // Initial connection check (Non-blocking failure permitted)
-    // Even if this fails, the FSM in scan_loop will keep retrying.
+    // Initial connection attempt (Non-blocking)
+    // The internal FSM will handle reconnection if this fails.
     if (!driver_->connect(params_.serial_port, params_.serial_baudrate)) {
-        RCLCPP_ERROR(this->get_logger(), "Initial connection failed at %s. Will retry in scan loop.", params_.serial_port.c_str());
+        RCLCPP_WARN(this->get_logger(), 
+            "[Driver] Initial connection failed at %s. FSM will retry in the loop.", 
+            params_.serial_port.c_str());
     }
 
     scan_pub_ = this->create_publisher<sensor_msgs::msg::LaserScan>("scan", 10);
@@ -97,7 +112,7 @@ RPlidarNode::CallbackReturn RPlidarNode::on_configure(const rclcpp_lifecycle::St
 }
 
 RPlidarNode::CallbackReturn RPlidarNode::on_activate(const rclcpp_lifecycle::State & state) {
-    RCLCPP_INFO(this->get_logger(), "Activating node...");
+    RCLCPP_INFO(this->get_logger(), "[Lifecycle] Activating node...");
     LifecycleNode::on_activate(state); // Activate Publisher
 
     // Launch the background scanning thread
@@ -108,15 +123,15 @@ RPlidarNode::CallbackReturn RPlidarNode::on_activate(const rclcpp_lifecycle::Sta
 }
 
 RPlidarNode::CallbackReturn RPlidarNode::on_deactivate(const rclcpp_lifecycle::State & state) {
-    RCLCPP_INFO(this->get_logger(), "Deactivating node...");
+    RCLCPP_INFO(this->get_logger(), "[Lifecycle] Deactivating node...");
     
-    // Stop the thread
+    // Stop the scanning thread
     is_scanning_ = false; 
     if (scan_thread_.joinable()) {
         scan_thread_.join();
     }
 
-    // Stop the motor
+    // Stop the motor to save power and safety
     if (driver_) {
         driver_->stop_motor();
     }
@@ -126,7 +141,7 @@ RPlidarNode::CallbackReturn RPlidarNode::on_deactivate(const rclcpp_lifecycle::S
 }
 
 RPlidarNode::CallbackReturn RPlidarNode::on_cleanup(const rclcpp_lifecycle::State &) {
-    RCLCPP_INFO(this->get_logger(), "Cleaning up resources...");
+    RCLCPP_INFO(this->get_logger(), "[Lifecycle] Cleaning up resources...");
     scan_pub_.reset();
     if (driver_) {
         driver_->disconnect();
@@ -136,12 +151,12 @@ RPlidarNode::CallbackReturn RPlidarNode::on_cleanup(const rclcpp_lifecycle::Stat
 }
 
 RPlidarNode::CallbackReturn RPlidarNode::on_shutdown(const rclcpp_lifecycle::State & state) {
-    RCLCPP_INFO(this->get_logger(), "Shutting down...");
+    RCLCPP_INFO(this->get_logger(), "[Lifecycle] Shutting down...");
     return on_cleanup(state);
 }
 
 // ========================================================================================
-// Private Methods & The Zombie Loop
+// Private Methods & Fault Tolerance FSM
 // ========================================================================================
 
 void RPlidarNode::init_parameters() {
@@ -153,39 +168,40 @@ void RPlidarNode::init_parameters() {
     this->get_parameter("dummy_mode", params_.dummy_mode);
     this->get_parameter("scan_mode", params_.scan_mode);
 }
-// rplidar_node.cpp 의 scan_loop 함수 전체를 이걸로 교체하세요.
 
+/**
+ * @brief The main acquisition loop running in a separate thread.
+ * Implements a Finite State Machine (FSM) to handle connection, health checks, 
+ * motor warmup, and error recovery (reset) automatically.
+ */
 void RPlidarNode::scan_loop() {
-    // [The Zombie State Machine]
-    enum class State { 
-        CONNECTING,     // 1. 연결 시도
-        CHECK_HEALTH,   // 2. 건강 체크 (순서 변경됨!)
-        WARMUP,         // 3. 모터 가동 및 스캔 시작
-        RUNNING,        // 4. 데이터 수신
-        RESETTING       // 5. 에러 시 리셋
+    enum class DriverState { 
+        CONNECTING,     ///< Attempting to open serial port
+        CHECK_HEALTH,   ///< Querying device health before operation
+        WARMUP,         ///< Starting motor and stabilizing rotation
+        RUNNING,        ///< Normal data acquisition
+        RESETTING       ///< Recovering from hardware errors
     };
 
-    State state = State::CONNECTING;
+    DriverState state = DriverState::CONNECTING;
     int error_count = 0;
     const int MAX_ERROR_COUNT = 10;
 
-    RCLCPP_INFO(this->get_logger(), ">>> Scan Loop & FSM Started <<<");
+    RCLCPP_INFO(this->get_logger(), "[FSM] Scan Loop Started.");
 
     while (rclcpp::ok() && is_scanning_) {
         switch (state) {
             // ---------------------------------------------------------
             // State 1: CONNECTING
             // ---------------------------------------------------------
-            case State::CONNECTING:
+            case DriverState::CONNECTING:
                 if (driver_->isConnected()) {
-                    // [수정 1] 연결되면 바로 WARMUP으로 가지 말고, CHECK_HEALTH로 보냅니다.
-                    RCLCPP_INFO(this->get_logger(), "[FSM] Connected. Checking Health FIRST...");
-                    state = State::CHECK_HEALTH; 
-                  } else {
+                    RCLCPP_INFO(this->get_logger(), "[FSM] Connection verified. Transition to HEALTH_CHECK.");
+                    state = DriverState::CHECK_HEALTH; 
+                } else {
                     if (driver_->connect(params_.serial_port, params_.serial_baudrate)) {
-                        // [수정 2] 여기서도 연결 성공하면 CHECK_HEALTH로 보냅니다.
-                        RCLCPP_INFO(this->get_logger(), "[FSM] Connected. Checking Health FIRST...");
-                        state = State::CHECK_HEALTH;
+                        RCLCPP_INFO(this->get_logger(), "[FSM] Connection Established. Transition to HEALTH_CHECK.");
+                        state = DriverState::CHECK_HEALTH;
                     } else {
                         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
                             "[FSM] Connection failed. Retrying...");
@@ -195,51 +211,49 @@ void RPlidarNode::scan_loop() {
                 break;
 
             // ---------------------------------------------------------
-            // State 2: CHECK_HEALTH (위치가 여기로 옴)
+            // State 2: CHECK_HEALTH
             // ---------------------------------------------------------
-            case State::CHECK_HEALTH:
+            case DriverState::CHECK_HEALTH:
                 {
-                    // 아직 스캔 명령을 안 내렸으니 라이다는 조용한 상태입니다. 이때 물어봐야 합니다.
+                    // Check health before starting the motor to avoid damaging the device
                     int health = driver_->getHealth(); 
-                    if (health == 0 || health == 1) { 
-                        RCLCPP_INFO(this->get_logger(), "[FSM] Health OK. Now Warming up...");
-                        // [수정 3] 건강하면 이제 WARMUP(스캔 시작)으로 보냅니다.
-                        state = State::WARMUP; 
+                    if (health == 0 || health == 1) { // 0: OK, 1: Warning
+                        RCLCPP_INFO(this->get_logger(), "[FSM] Health OK. Transition to WARMUP.");
+                        state = DriverState::WARMUP; 
                     } else {
-                        RCLCPP_ERROR(this->get_logger(), "[FSM] Health ERROR! Initiating Reset.");
-                        state = State::RESETTING;
+                        RCLCPP_ERROR(this->get_logger(), "[FSM] Device Health Error! Status: %d. Initiating Reset.", health);
+                        state = DriverState::RESETTING;
                     }
                 }
                 break;
 
             // ---------------------------------------------------------
-            // State 3: WARMUP (모터 켜고 스캔 명령 내리는 곳)
+            // State 3: WARMUP
             // ---------------------------------------------------------
-            case State::WARMUP:
-                RCLCPP_INFO(this->get_logger(), "[FSM] Starting Motor & Scan...");
-                // 여기서 start_motor(내부적으로 startScanExpress)를 호출합니다.
+            case DriverState::WARMUP:
+                RCLCPP_INFO(this->get_logger(), "[FSM] Starting Motor & Configuring Scan Mode...");
+                
                 if (driver_->start_motor()) {
-                    // S3는 기동 시 전압 안정화가 필요합니다. 1초 대기.
+                    // S-Series needs stabilization time for voltage/speed
                     std::this_thread::sleep_for(1000ms);
-                    RCLCPP_INFO(this->get_logger(), "[FSM] Scan Started. Entering Running State.");
-                    // [수정 4] 스캔 켜졌으니 이제 데이터 받으러 RUNNING으로 갑니다.
-                    state = State::RUNNING; 
+                    RCLCPP_INFO(this->get_logger(), "[FSM] Motor Started. Transition to RUNNING.");
+                    state = DriverState::RUNNING; 
                     error_count = 0;
                 } else {
-                    RCLCPP_ERROR(this->get_logger(), "[FSM] Failed to start motor. Resetting.");
-                    state = State::RESETTING;
+                    RCLCPP_ERROR(this->get_logger(), "[FSM] Failed to start motor. Retrying via Reset.");
+                    state = DriverState::RESETTING;
                 }
                 break;
 
             // ---------------------------------------------------------
-            // State 4: RUNNING (데이터 줍줍)
+            // State 4: RUNNING
             // ---------------------------------------------------------
-            case State::RUNNING:
+            case DriverState::RUNNING:
                 {
                     std::vector<sl_lidar_response_measurement_node_hq_t> nodes;
                     rclcpp::Time start_time = this->now();
 
-                    // Poll for data
+                    // Blocking call with timeout
                     if (driver_->grab_scan_data(nodes)) {
                         double duration = (this->now() - start_time).seconds();
                         publish_scan(nodes, start_time, duration);
@@ -247,10 +261,10 @@ void RPlidarNode::scan_loop() {
                     } else {
                         error_count++;
                         if (error_count > MAX_ERROR_COUNT) {
-                            RCLCPP_ERROR(this->get_logger(), "[FSM] Too many grab failures (%d). Hardware Unresponsive!", error_count);
-                            state = State::RESETTING;
+                            RCLCPP_ERROR(this->get_logger(), "[FSM] Excessive grab failures (%d). Hardware Unresponsive!", error_count);
+                            state = DriverState::RESETTING;
                         } else {
-                            // CPU 점유율 방지용 미세 딜레이
+                            // Slight yield to prevent CPU spinning on fast failures
                             std::this_thread::sleep_for(1ms);
                         }
                     }
@@ -260,27 +274,28 @@ void RPlidarNode::scan_loop() {
             // ---------------------------------------------------------
             // State 5: RESETTING
             // ---------------------------------------------------------
-            case State::RESETTING:
-                RCLCPP_WARN(this->get_logger(), "[FSM] Resetting Hardware...");
+            case DriverState::RESETTING:
+                RCLCPP_WARN(this->get_logger(), "[FSM] Performing Hardware Reset...");
                 driver_->stop_motor(); 
                 driver_->reset();      
                 
-                // MCU 재부팅 대기
+                // Wait for MCU reboot
                 std::this_thread::sleep_for(2000ms);
                 
                 driver_->disconnect();
-                // [수정 5] 리셋 후에는 다시 연결부터 시도
-                state = State::CONNECTING;
+                
+                // Re-initialize from the beginning
+                state = DriverState::CONNECTING;
                 error_count = 0;
                 break;
         }
 
-        // 루프 전체 딜레이 (CPU 과부하 방지)
-        if (state != State::RUNNING) {
+        // FSM Loop Throttle (Prevent CPU Hogging in non-running states)
+        if (state != DriverState::RUNNING) {
              std::this_thread::sleep_for(10ms);
         }
     }
-    RCLCPP_INFO(this->get_logger(), "Scan Loop Terminated.");
+    RCLCPP_INFO(this->get_logger(), "[FSM] Scan Loop Terminated.");
 }
 
 void RPlidarNode::publish_scan(const std::vector<sl_lidar_response_measurement_node_hq_t>& nodes,
@@ -295,7 +310,7 @@ void RPlidarNode::publish_scan(const std::vector<sl_lidar_response_measurement_n
     scan_msg->angle_min = 0.0;
     scan_msg->angle_max = 2.0 * M_PI;
     
-    // Calculate increment based on actual data count
+    // Calculate angle increment dynamically based on actual point count
     scan_msg->angle_increment = (2.0 * M_PI) / (double)(count > 1 ? count - 1 : 1);
     scan_msg->scan_time = scan_duration;
     scan_msg->time_increment = scan_duration / (double)(count > 1 ? count - 1 : 1);
@@ -306,7 +321,8 @@ void RPlidarNode::publish_scan(const std::vector<sl_lidar_response_measurement_n
     scan_msg->intensities.resize(count);
 
     for (size_t i = 0; i < count; ++i) {
-        float dist = nodes[i].dist_mm_q2 / 4000.0f; // mm to meters
+        // Convert SDK units (dist_mm_q2) to Meters
+        float dist = nodes[i].dist_mm_q2 / 4000.0f; 
         scan_msg->ranges[i] = (dist == 0.0f) ? std::numeric_limits<float>::infinity() : dist;
         scan_msg->intensities[i] = (float)(nodes[i].quality >> 2);
     }
@@ -317,6 +333,11 @@ void RPlidarNode::publish_scan(const std::vector<sl_lidar_response_measurement_n
 int main(int argc, char ** argv) {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<RPlidarNode>();
+    
+    // Note: Since this is a LifecycleNode, it usually requires an external
+    // Lifecycle Manager to transition states (Configure -> Activate).
+    // For standalone testing, you might need to auto-activate here or use command line tools.
+    
     rclcpp::executors::MultiThreadedExecutor executor;
     executor.add_node(node->get_node_base_interface());
     executor.spin();

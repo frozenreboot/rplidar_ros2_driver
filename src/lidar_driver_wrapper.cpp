@@ -37,20 +37,22 @@
  * @brief Implementation of the LidarDriverInterface for Slamtec RPLidar.
  * @details Implements secure and optimized hardware interactions using the Slamtec SDK.
  * @author frozenreboot (frozenreboot@gmail.com)
- * @date 2025-12-13
+ * @date 2025-12-24
  */
+
 
 #include "lidar_driver_wrapper.hpp"
 #include <iostream>
 #include <cmath>
 #include <thread>
 #include <chrono>
+#include <vector>
 
 using namespace sl;
 
-// ==========================================
+// ============================================================================
 // Real Lidar Driver Implementation
-// ==========================================
+// ============================================================================
 
 RealLidarDriver::RealLidarDriver() {
     // Instantiate the underlying SDK driver
@@ -58,8 +60,19 @@ RealLidarDriver::RealLidarDriver() {
 }
 
 RealLidarDriver::~RealLidarDriver() {
-    // Clean up SDK resources
+    // Ensure clean shutdown of the driver instance
     if (drv_) {
+        // 1. Stop the motor if connected
+        if (drv_->isConnected()) {
+            drv_->stop();
+            drv_->setMotorSpeed(0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100)); 
+        }
+
+        // 2. Disconnect from the serial port
+        drv_->disconnect();
+
+        // 3. Release memory
         delete drv_;
         drv_ = nullptr;
     }
@@ -72,16 +85,18 @@ bool RealLidarDriver::connect(const std::string& port, sl_u32 baudrate) {
     IChannel* channel = *createSerialPortChannel(port, baudrate);
     if (!channel) return false;
     
+    // Attempt connection
     auto ans = drv_->connect(channel);
     if (SL_IS_FAIL(ans)) return false;
-    // Attempt connection
+
+    // Retrieve device information
     auto res = drv_->getDeviceInfo(devinfo_);
     if (SL_IS_FAIL(res)) {
-        std::cerr << "Failed to get device info!" << std::endl;
+        std::cerr << "[Driver] Failed to get device info!" << std::endl;
         return false;
     }
     
-    std::cout << "Connected to RPLIDAR Model ID: " << (int)(devinfo_.model >> 4) << std::endl;
+    std::cout << "[Driver] Connected to RPLIDAR Model ID: " << (int)(devinfo_.model >> 4) << std::endl;
     return true;
 }
 
@@ -97,7 +112,7 @@ bool RealLidarDriver::isConnected() {
 }
 
 int RealLidarDriver::getHealth() {
-    if (!isConnected()) return 2; // Error
+    if (!isConnected()) return 2; // Error state
 
     sl_lidar_response_device_health_t health_info;
     auto res = drv_->getHealth(health_info);
@@ -115,73 +130,79 @@ void RealLidarDriver::reset() {
     }
 }
 
-// lidar_driver_wrapper.cpp 의 start_motor 함수를 이걸로 교체하세요
-
+/**
+ * @brief Starts the motor and configures the scan mode.
+ * Automatically selects 'DenseBoost' for S-Series or falls back to standard modes.
+ * @return true if motor started and scan mode set successfully.
+ */
 bool RealLidarDriver::start_motor() {
     if (!isConnected()) return false;
 
-    // 1. 모터 회전 시작 (S시리즈는 내부 제어, A시리즈는 PWM)
+    // --------------------------------------------------------
+    // Step 1. Motor Control Strategy
+    // --------------------------------------------------------
     if (is_s_series()) {
+        // [S/T Series] Internal closed-loop control
         drv_->setMotorSpeed(); 
     } else {
+        // [A Series] PWM control (Default: 600)
         drv_->setMotorSpeed(600); 
     }
 
-    // 2. 지원하는 스캔 모드 탐색
+    // --------------------------------------------------------
+    // Step 2. Scan Mode Strategy
+    // --------------------------------------------------------
+    
+    // Safety fallback for A-Series to avoid complicated mode queries
+    if (!is_s_series()) {
+        std::cout << "[Driver] Detected A-Series. Using Legacy Scan Mode." << std::endl;
+        return SL_IS_OK(drv_->startScan(0, 1)); // 0: Auto, 1: Typical
+    }
+
+    // --- S/T Series High-Performance Logic ---
+    
     std::vector<LidarScanMode> allSupportedScanModes;
     sl_result op_result = drv_->getAllSupportedScanModes(allSupportedScanModes);
 
     if (SL_IS_FAIL(op_result)) {
-        // 모드 조회가 안 되면 구형(Legacy) 방식으로 시도
-        auto res = drv_->startScan(0, 1); 
-        return SL_IS_OK(res);
+        // Fallback if mode query fails
+        return SL_IS_OK(drv_->startScan(0, 1));
     }
 
-    // 3. 가장 적절한 모드 선택 (S3는 보통 DenseBoost나 Standard를 씀)
-    // 여기서는 단순히 목록의 마지막(보통 성능이 제일 좋은) 모드를 선택하거나,
-    // 특정 이름("DenseBoost")을 찾도록 할 수 있습니다.
-    
+    // Select optimum mode (Priority: DenseBoost > Last Available > Standard)
     sl_u16 selectedScanMode = sl_u16(-1);
     
-    // 로그로 지원 모드 출력 (디버깅용)
-    std::cout << "--- Supported Scan Modes ---" << std::endl;
-    for (const auto& mode : allSupportedScanModes) {
-        std::cout << "Mode: " << mode.scan_mode << ", ID: " << mode.id << std::endl;
-        // 만약 'Standard'나 'DenseBoost'를 선호한다면 여기서 string 비교로 id를 찾으면 됨.
-    }
-    std::cout << "----------------------------" << std::endl;
-
-// [수정 후] DenseBoost 모드 선호 (S3 권장 모드)
     for (const auto& mode : allSupportedScanModes) {
         std::string mode_name = mode.scan_mode;
-        // "DenseBoost"가 포함된 모드를 찾습니다.
+        // Priority 1: DenseBoost (Max Performance for S3)
         if (mode_name.find("DenseBoost") != std::string::npos) { 
              selectedScanMode = mode.id;
              break;
         }
     }
 
-    // DenseBoost 못 찾았으면 리스트의 마지막 거(보통 최신 모드) 사용
+    // Priority 2: Use the last mode in the list (Usually the newest/best)
     if (selectedScanMode == sl_u16(-1) && !allSupportedScanModes.empty()) {
         selectedScanMode = allSupportedScanModes.back().id;
     }
 
-    // Standard 못 찾았으면 그냥 리스트의 마지막 거(보통 최신 모드) 사용
-    if (selectedScanMode == sl_u16(-1) && !allSupportedScanModes.empty()) {
-        selectedScanMode = allSupportedScanModes.back().id;
+    // Priority 3: Legacy Fallback
+    if (selectedScanMode == sl_u16(-1)) {
+        return SL_IS_OK(drv_->startScan(0, 1));
     }
 
-    // 4. 선택된 모드로 스캔 시작 (Express Scan)
+    // Use Express Scan for S-Series
     LidarScanMode scanParams;
     op_result = drv_->startScanExpress(false, selectedScanMode, 0, &scanParams);
 
     if (SL_IS_OK(op_result)) {
-        std::cout << "Selected Mode ID: " << selectedScanMode << " | Max Dist: " << scanParams.max_distance << std::endl;
+        std::cout << "[Driver] S-Series Mode ID: " << selectedScanMode 
+                  << " | Max Dist: " << scanParams.max_distance << "m" << std::endl;
         return true;
-    } else {
-        // Express 실패시 일반 스캔 시도 (최후의 수단)
-        return SL_IS_OK(drv_->startScan(0, 1));
-    }
+    } 
+    
+    // Final Fallback
+    return SL_IS_OK(drv_->startScan(0, 1));
 }
 
 void RealLidarDriver::stop_motor() {
@@ -191,13 +212,17 @@ void RealLidarDriver::stop_motor() {
     }
 }
 
-// lidar_driver_wrapper.cpp 수정
-
+/**
+ * @brief Retrieves scan data from the LiDAR.
+ * Uses a static heap buffer to handle high-density data (e.g., S3 DenseBoost).
+ * @param nodes Vector to populate with scan data.
+ * @return true if data successfully grabbed.
+ */
 bool RealLidarDriver::grab_scan_data(std::vector<sl_lidar_response_measurement_node_hq_t>& nodes) {
     if (!isConnected()) return false;
 
-    // [수정 1] S3는 데이터가 많을 수 있으니 버퍼를 넉넉하게 잡고, 스택 대신 vector(Heap)를 씁니다.
-    // S3 DenseBoost 모드 등에서 한 바퀴에 8192개 넘을 수도 있습니다. 안전하게 16k 잡으세요.
+    // Allocate a large static buffer to prevent stack overflow and frequent reallocations.
+    // S3 DenseBoost can generate >8k points per rotation.
     static std::vector<sl_lidar_response_measurement_node_hq_t> raw_nodes_buffer;
     if (raw_nodes_buffer.size() < 16384) {
         raw_nodes_buffer.resize(16384);
@@ -205,8 +230,7 @@ bool RealLidarDriver::grab_scan_data(std::vector<sl_lidar_response_measurement_n
 
     size_t count = raw_nodes_buffer.size();
 
-    // Blocking call (Timeout usually 2s)
-    // 여기서 count는 입력(버퍼크기)이자 출력(받은 개수)입니다.
+    // Blocking call to fetch scan data
     auto res = drv_->grabScanDataHq(raw_nodes_buffer.data(), count);
 
     if (SL_IS_OK(res)) {
@@ -215,53 +239,39 @@ bool RealLidarDriver::grab_scan_data(std::vector<sl_lidar_response_measurement_n
         return true;
     } 
     
-    // [수정 2] 도대체 왜 실패했는지 헥사 코드를 봐야 합니다.
-    // RESULT_OPERATION_TIMEOUT (0x80000008) 인지, RESULT_INVALID_DATA 인지 확인 필요
-    // printf는 버퍼링 때문에 ROS2 로그에 늦게 뜰 수 있으니 stderr로 뱉습니다.
-    std::cerr << "[Driver Error] grabScanDataHq failed! Code: " 
+    // Log error code for debugging (Timeout or Invalid Data)
+    std::cerr << "[Driver Error] grabScanDataHq failed! Code: 0x" 
               << std::hex << res << std::dec << std::endl;
               
     return false;
 }
 
 
-// ==========================================
+// ============================================================================
 // Dummy Lidar Driver Implementation
-// ==========================================
+// ============================================================================
 
 bool DummyLidarDriver::connect(const std::string& port, sl_u32 baudrate) {
-    (void)port; (void)baudrate; // Suppress unused warnings
-    return true; // Always succeed
-}
-
-void DummyLidarDriver::disconnect() {
-    // No-op
-}
-
-bool DummyLidarDriver::isConnected() {
-    return true;
-}
-
-int DummyLidarDriver::getHealth() {
-    return 0; // Always Healthy
-}
-
-void DummyLidarDriver::reset() {
-    // No-op
-}
-
-bool DummyLidarDriver::start_motor() {
+    (void)port; (void)baudrate; // Suppress unused parameter warnings
     return true; 
 }
 
-void DummyLidarDriver::stop_motor() {
-    // No-op
-}
+void DummyLidarDriver::disconnect() { /* No-op */ }
+
+bool DummyLidarDriver::isConnected() { return true; }
+
+int DummyLidarDriver::getHealth() { return 0; } // Always Healthy
+
+void DummyLidarDriver::reset() { /* No-op */ }
+
+bool DummyLidarDriver::start_motor() { return true; }
+
+void DummyLidarDriver::stop_motor() { /* No-op */ }
 
 bool DummyLidarDriver::grab_scan_data(std::vector<sl_lidar_response_measurement_node_hq_t>& nodes) {
     // Generate synthetic data (Sine wave wall pattern)
     nodes.clear();
-    int count = 360; // 1 point per degree
+    int count = 360; // 1 point per degree resolution
     nodes.reserve(count);
 
     static float phase = 0.0f;
@@ -282,7 +292,7 @@ bool DummyLidarDriver::grab_scan_data(std::vector<sl_lidar_response_measurement_
         nodes.push_back(node);
     }
     
-    // Simulate hardware scanning delay (10Hz)
+    // Simulate hardware scanning delay (approx. 10Hz)
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     return true;
 }
