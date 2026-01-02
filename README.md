@@ -44,8 +44,15 @@ Please open an issue with the title `[Experiment] Your_Robot_Name` and include:
 ### 1. Installation
 ```bash
 cd ~/ros2_ws/src
-git clone [https://github.com/frozenreboot/rplidar_ros2_driver.git](https://github.com/frozenreboot/rplidar_ros2_driver.git)
+git clone https://github.com/frozenreboot/rplidar_ros2_driver.git
 cd ..
+
+# Install dependencies
+sudo apt update
+rosdep update
+rosdep install --from-paths src --ignore-src -r -y
+
+# Build the workspace
 colcon build --symlink-install
 ```
 
