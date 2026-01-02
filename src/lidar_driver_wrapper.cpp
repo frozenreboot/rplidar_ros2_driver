@@ -94,7 +94,7 @@ RealLidarDriver::~RealLidarDriver() {
   }
 }
 
-bool RealLidarDriver::connect(const std::string& port, sl_u32 baudrate,
+bool RealLidarDriver::connect(const std::string &port, sl_u32 baudrate,
                               bool use_geometric_compensation) {
   if (!drv_) {
     return false;
@@ -118,7 +118,7 @@ bool RealLidarDriver::connect(const std::string& port, sl_u32 baudrate,
     return false;
   }
 
-  IChannel* channel = *channel_res;
+  IChannel *channel = *channel_res;
   if (!channel) {
     return false;
   }
@@ -150,15 +150,24 @@ void RealLidarDriver::detect_and_init_strategy() {
   sl::LIDARTechnologyType tech_type = drv_->getLIDARTechnologyType(&devinfo_);
   sl::LIDARMajorType major_type = drv_->getLIDARMajorType(&devinfo_);
 
+  std::cout << "[Driver] Device Model ID: " << (int)devinfo_.model << std::endl;
+
   // S-Series / DTOF logic.
   if (tech_type == sl::LIDAR_TECHNOLOGY_DTOF ||
       major_type == sl::LIDAR_MAJOR_TYPE_S_SERIES) {
     profile_.protocol = ProtocolType::NEW_TYPE;
-    profile_.model_name = "S-Series (ToF)";
-    profile_.hw_max_distance = 40.0f;  // Initial default; may be updated later.
+    switch (devinfo_.model) {
+    case 65: // 0x41
+      profile_.model_name = "RPLIDAR C1";
+      break;
+    default:
+      profile_.model_name = "S-Series (ToF)";
+      break;
+    }
+    profile_.hw_max_distance = 40.0f; // Initial default; may be updated later.
     is_s_series_detected_ = true;
-    std::cout << "[Driver] Detected new-type (S-series / DTOF) device."
-              << std::endl;
+    std::cout << "[Driver] Detected new-type device: " << profile_.model_name
+              << " (Model ID: " << (int)devinfo_.model << ")" << std::endl;
   } else {
     profile_.protocol = ProtocolType::OLD_TYPE;
     profile_.model_name = "A-Series (Triangulation)";
@@ -196,7 +205,7 @@ bool RealLidarDriver::start_motor(std::string user_mode_pref,
 
     // If user requested a specific scan mode, try to match it by name.
     if (!user_mode_pref.empty()) {
-      for (const auto& m : modes) {
+      for (const auto &m : modes) {
         if (std::string(m.scan_mode) == user_mode_pref) {
           selected_mode_id = m.id;
           selected_mode_name = m.scan_mode;
@@ -213,7 +222,7 @@ bool RealLidarDriver::start_motor(std::string user_mode_pref,
 
     // Automatic fallback: prefer "DenseBoost" if available.
     if (selected_mode_id == static_cast<sl_u16>(-1)) {
-      for (const auto& m : modes) {
+      for (const auto &m : modes) {
         if (std::string(m.scan_mode).find("DenseBoost") != std::string::npos) {
           selected_mode_id = m.id;
           selected_mode_name = m.scan_mode;
@@ -225,7 +234,7 @@ bool RealLidarDriver::start_motor(std::string user_mode_pref,
 
     // Second fallback: try "Sensitivity" modes.
     if (selected_mode_id == static_cast<sl_u16>(-1)) {
-      for (const auto& m : modes) {
+      for (const auto &m : modes) {
         if (std::string(m.scan_mode).find("Sensitivity") != std::string::npos) {
           selected_mode_id = m.id;
           selected_mode_name = m.scan_mode;
@@ -254,7 +263,7 @@ bool RealLidarDriver::start_motor(std::string user_mode_pref,
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
   profile_.active_mode = "Standard";
-  profile_.hw_max_distance = 12.0f;  // Legacy default.
+  profile_.hw_max_distance = 12.0f; // Legacy default.
 
   return SL_IS_OK(drv_->startScan(0, 1));
 }
@@ -296,7 +305,7 @@ bool RealLidarDriver::is_new_type() const {
 }
 
 bool RealLidarDriver::grab_scan_data(
-    std::vector<sl_lidar_response_measurement_node_hq_t>& nodes) {
+    std::vector<sl_lidar_response_measurement_node_hq_t> &nodes) {
   if (!isConnected()) {
     return false;
   }
@@ -405,7 +414,7 @@ void RealLidarDriver::reset() {
 // [Dummy Lidar Driver Implementation]
 // ============================================================================
 
-bool DummyLidarDriver::connect(const std::string&, sl_u32, bool) {
+bool DummyLidarDriver::connect(const std::string &, sl_u32, bool) {
   return true;
 }
 
@@ -430,7 +439,7 @@ void DummyLidarDriver::print_summary() {
 float DummyLidarDriver::get_hw_max_distance() const { return 40.0f; }
 
 bool DummyLidarDriver::grab_scan_data(
-    std::vector<sl_lidar_response_measurement_node_hq_t>& nodes) {
+    std::vector<sl_lidar_response_measurement_node_hq_t> &nodes) {
   nodes.clear();
 
   const int count = 360;
