@@ -78,3 +78,11 @@ rplidar_node:
     #   "reliable"    : Prioritize delivery guarantees (similar to TCP semantics);
     #                   may be useful on unstable networks, at the cost of latency.
     qos_reliability: "best_effort"
+    
+    # max_retries:
+    #   Number of allowed communication errors before resetting the driver.
+    #   Recommended: 3 (~4-6s delay) for quicker disconnect detection.
+    #   If this value is too small, temporary noise may be treated as a disconnect.
+    #   The SDK checks device status every ~2 seconds,
+    #   so the actual detection time ≈ max_retries × 2s.
+    max_retries: 3

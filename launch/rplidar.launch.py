@@ -119,7 +119,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value="best_effort",
         description="Reliability QoS policy for LaserScan publisher.",
     )
-
+    max_retries_arg = DeclareLaunchArgument(
+        "max_retries",
+        default_value="3",
+        description="Number of allowed communication errors before reset.",
+    )
     # -------------------------------------------------------------------------
     # 2. Lifecycle Node Definition
     # -------------------------------------------------------------------------
@@ -137,6 +141,7 @@ def generate_launch_description() -> LaunchDescription:
                 "max_distance": LaunchConfiguration("max_distance"),
                 "publish_tf": LaunchConfiguration("publish_tf"),
                 "qos_reliability": LaunchConfiguration("qos_reliability"),
+                "max_retries": LaunchConfiguration("max_retries"),
             },
         ],
     )
@@ -189,6 +194,7 @@ def generate_launch_description() -> LaunchDescription:
             max_dist_arg,
             publish_tf_arg,
             qos_arg,
+            max_retries_arg,
             driver_node,
             configure_event,
             activate_event,

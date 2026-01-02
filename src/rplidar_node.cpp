@@ -56,7 +56,7 @@
 
 #include "rplidar_node.hpp"
 
-#include <algorithm>  // std::min
+#include <algorithm> // std::min
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -69,7 +69,7 @@ using namespace std::chrono_literals;
 // Constructor / Destructor
 // ============================================================================
 
-RPlidarNode::RPlidarNode(const rclcpp::NodeOptions& options)
+RPlidarNode::RPlidarNode(const rclcpp::NodeOptions &options)
     : rclcpp_lifecycle::LifecycleNode("rplidar_node", options),
       diagnostic_updater_(this) {
   // Declare static parameters. Values are read in init_parameters().
@@ -109,8 +109,8 @@ RPlidarNode::~RPlidarNode() {
 // Lifecycle Callbacks
 // ============================================================================
 
-RPlidarNode::CallbackReturn RPlidarNode::on_configure(
-    const rclcpp_lifecycle::State&) {
+RPlidarNode::CallbackReturn
+RPlidarNode::on_configure(const rclcpp_lifecycle::State &) {
   RCLCPP_INFO(this->get_logger(), "[Lifecycle] Configuring node...");
 
   // Load parameters into local struct.
@@ -151,7 +151,7 @@ RPlidarNode::CallbackReturn RPlidarNode::on_configure(
   this->get_parameter_or("qos_reliability", qos_policy,
                          std::string("best_effort"));
 
-  rclcpp::QoS qos_profile(10);  // History: depth 10
+  rclcpp::QoS qos_profile(10); // History: depth 10
 
   if (qos_policy == "reliable") {
     qos_profile.reliable();
@@ -176,8 +176,8 @@ RPlidarNode::CallbackReturn RPlidarNode::on_configure(
     geometry_msgs::msg::TransformStamped t;
 
     t.header.stamp = this->now();
-    t.header.frame_id = "base_link";      // Parent frame
-    t.child_frame_id = params_.frame_id;  // Child frame (e.g., "laser_frame")
+    t.header.frame_id = "base_link";     // Parent frame
+    t.child_frame_id = params_.frame_id; // Child frame (e.g., "laser_frame")
 
     t.transform.translation.x = 0.0;
     t.transform.translation.y = 0.0;
@@ -206,8 +206,8 @@ RPlidarNode::CallbackReturn RPlidarNode::on_configure(
   return CallbackReturn::SUCCESS;
 }
 
-RPlidarNode::CallbackReturn RPlidarNode::on_activate(
-    const rclcpp_lifecycle::State& state) {
+RPlidarNode::CallbackReturn
+RPlidarNode::on_activate(const rclcpp_lifecycle::State &state) {
   RCLCPP_INFO(this->get_logger(), "[Lifecycle] Activating node...");
 
   // Activate base LifecycleNode behavior.
@@ -220,8 +220,8 @@ RPlidarNode::CallbackReturn RPlidarNode::on_activate(
   return CallbackReturn::SUCCESS;
 }
 
-RPlidarNode::CallbackReturn RPlidarNode::on_deactivate(
-    const rclcpp_lifecycle::State& state) {
+RPlidarNode::CallbackReturn
+RPlidarNode::on_deactivate(const rclcpp_lifecycle::State &state) {
   RCLCPP_INFO(this->get_logger(), "[Lifecycle] Deactivating node...");
 
   is_scanning_ = false;
@@ -237,8 +237,8 @@ RPlidarNode::CallbackReturn RPlidarNode::on_deactivate(
   return CallbackReturn::SUCCESS;
 }
 
-RPlidarNode::CallbackReturn RPlidarNode::on_cleanup(
-    const rclcpp_lifecycle::State&) {
+RPlidarNode::CallbackReturn
+RPlidarNode::on_cleanup(const rclcpp_lifecycle::State &) {
   RCLCPP_INFO(this->get_logger(), "[Lifecycle] Cleaning up resources...");
 
   scan_pub_.reset();
@@ -251,8 +251,8 @@ RPlidarNode::CallbackReturn RPlidarNode::on_cleanup(
   return CallbackReturn::SUCCESS;
 }
 
-RPlidarNode::CallbackReturn RPlidarNode::on_shutdown(
-    const rclcpp_lifecycle::State& state) {
+RPlidarNode::CallbackReturn
+RPlidarNode::on_shutdown(const rclcpp_lifecycle::State &state) {
   RCLCPP_INFO(this->get_logger(), "[Lifecycle] Shutting down...");
   return on_cleanup(state);
 }
@@ -275,6 +275,9 @@ void RPlidarNode::init_parameters() {
   // Dynamic / runtime-tunable parameters with defaults.
   this->declare_parameter<bool>("scan_processing", true);
   this->get_parameter("scan_processing", params_.scan_processing);
+
+  this->declare_parameter<int>("max_retries", 3);
+  this->get_parameter("max_retries", params_.max_retries);
 
   this->declare_parameter<std::string>("qos_reliability", "best_effort");
   this->declare_parameter<bool>("publish_tf", true);
@@ -306,180 +309,180 @@ void RPlidarNode::scan_loop() {
 
   DriverState state = DriverState::CONNECTING;
   int error_count = 0;
-  const int MAX_ERROR_COUNT = 15;
 
   RCLCPP_INFO(this->get_logger(), "[FSM] Scan loop started.");
 
   while (rclcpp::ok() && is_scanning_) {
     switch (state) {
-      // -----------------------------------------------------------------
-      // State 1: CONNECTING
-      // -----------------------------------------------------------------
-      case DriverState::CONNECTING: {
-        // Ensure a driver instance exists (may have been reset).
-        if (!driver_) {
-          if (params_.dummy_mode) {
-            driver_ = std::make_unique<DummyLidarDriver>();
-          } else {
-            driver_ = std::make_unique<RealLidarDriver>();
-          }
+    // -----------------------------------------------------------------
+    // State 1: CONNECTING
+    // -----------------------------------------------------------------
+    case DriverState::CONNECTING: {
+      // Ensure a driver instance exists (may have been reset).
+      if (!driver_) {
+        if (params_.dummy_mode) {
+          driver_ = std::make_unique<DummyLidarDriver>();
+        } else {
+          driver_ = std::make_unique<RealLidarDriver>();
         }
-
-        if (!driver_->isConnected()) {
-          // Attempt to connect.
-          if (!driver_->connect(params_.serial_port, params_.serial_baudrate,
-                                params_.angle_compensate)) {
-            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                                 "[FSM] Connection failed. Retrying...");
-            std::this_thread::sleep_for(1000ms);
-            break;
-          }
-
-          // Sanity check: verify health immediately after connecting.
-          int health_code = driver_->getHealth();
-          if (health_code > 1) {  // 2 = error
-            RCLCPP_WARN(this->get_logger(),
-                        "[FSM] Connection appears unhealthy (Health: %d). "
-                        "Disconnecting and retrying...",
-                        health_code);
-            driver_->disconnect();
-            std::this_thread::sleep_for(1000ms);
-            break;
-          }
-
-          RCLCPP_INFO(this->get_logger(),
-                      "[FSM] Connection established and verified.");
-        }
-
-        // Detect model and protocol.
-        driver_->detect_and_init_strategy();
-
-        {
-          auto real_drv = dynamic_cast<RealLidarDriver*>(driver_.get());
-          if (real_drv) {
-            cached_device_info_ = real_drv->get_device_info_str();
-          } else {
-            cached_device_info_ = "[Dummy] Virtual Driver";
-          }
-          RCLCPP_INFO(this->get_logger(), "[Hardware Detail] %s",
-                      cached_device_info_.c_str());
-        }
-
-        state = DriverState::CHECK_HEALTH;
-        break;
       }
 
-      // -----------------------------------------------------------------
-      // State 2: CHECK_HEALTH
-      // -----------------------------------------------------------------
-      case DriverState::CHECK_HEALTH: {
-        int health = driver_->getHealth();
-        if (health == 0 || health == 1) {  // OK or Warning
-          state = DriverState::WARMUP;
-        } else {
-          // If health is bad, treat as connection failure and retry.
-          RCLCPP_ERROR(this->get_logger(),
-                       "[FSM] Health error: %d. Disconnecting...", health);
+      if (!driver_->isConnected()) {
+        // Attempt to connect.
+        if (!driver_->connect(params_.serial_port, params_.serial_baudrate,
+                              params_.angle_compensate)) {
+          RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                               "[FSM] Connection failed. Retrying...");
+          std::this_thread::sleep_for(1000ms);
+          break;
+        }
 
+        // Sanity check: verify health immediately after connecting.
+        int health_code = driver_->getHealth();
+        if (health_code > 1) { // 2 = error
+          RCLCPP_WARN(this->get_logger(),
+                      "[FSM] Connection appears unhealthy (Health: %d). "
+                      "Disconnecting and retrying...",
+                      health_code);
           driver_->disconnect();
           std::this_thread::sleep_for(1000ms);
-          state = DriverState::CONNECTING;
+          break;
         }
-        break;
+
+        RCLCPP_INFO(this->get_logger(),
+                    "[FSM] Connection established and verified.");
       }
 
-      // -----------------------------------------------------------------
-      // State 3: WARMUP
-      // -----------------------------------------------------------------
-      case DriverState::WARMUP: {
-        RCLCPP_INFO(this->get_logger(), "[FSM] Starting motor...");
+      // Detect model and protocol.
+      driver_->detect_and_init_strategy();
 
-        if (driver_->start_motor(params_.scan_mode, params_.rpm)) {
-          driver_->print_summary();
+      {
+        auto real_drv = dynamic_cast<RealLidarDriver *>(driver_.get());
+        if (real_drv) {
+          cached_device_info_ = real_drv->get_device_info_str();
+        } else {
+          cached_device_info_ = "[Dummy] Virtual Driver";
+        }
+        RCLCPP_INFO(this->get_logger(), "[Hardware Detail] %s",
+                    cached_device_info_.c_str());
+      }
 
-          float hw_limit = driver_->get_hw_max_distance();
-          if (params_.max_distance > 0.0f) {
-            cached_current_max_range_ =
-                std::min(params_.max_distance, hw_limit);
-          } else {
-            cached_current_max_range_ = hw_limit;
-          }
+      state = DriverState::CHECK_HEALTH;
+      break;
+    }
 
-          RCLCPP_INFO(this->get_logger(), "[Config] Max Range: %.2f m",
-                      cached_current_max_range_);
+    // -----------------------------------------------------------------
+    // State 2: CHECK_HEALTH
+    // -----------------------------------------------------------------
+    case DriverState::CHECK_HEALTH: {
+      int health = driver_->getHealth();
+      if (health == 0 || health == 1) { // OK or Warning
+        state = DriverState::WARMUP;
+      } else {
+        // If health is bad, treat as connection failure and retry.
+        RCLCPP_ERROR(this->get_logger(),
+                     "[FSM] Health error: %d. Disconnecting...", health);
 
-          RCLCPP_INFO(this->get_logger(),
-                      "[FSM] Motor started. Entering RUNNING state.");
-          state = DriverState::RUNNING;
+        driver_->disconnect();
+        std::this_thread::sleep_for(1000ms);
+        state = DriverState::CONNECTING;
+      }
+      break;
+    }
+
+    // -----------------------------------------------------------------
+    // State 3: WARMUP
+    // -----------------------------------------------------------------
+    case DriverState::WARMUP: {
+      RCLCPP_INFO(this->get_logger(), "[FSM] Starting motor...");
+
+      if (driver_->start_motor(params_.scan_mode, params_.rpm)) {
+        driver_->print_summary();
+
+        float hw_limit = driver_->get_hw_max_distance();
+        if (params_.max_distance > 0.0f) {
+          cached_current_max_range_ = std::min(params_.max_distance, hw_limit);
+        } else {
+          cached_current_max_range_ = hw_limit;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "[Config] Max Range: %.2f m",
+                    cached_current_max_range_);
+
+        RCLCPP_INFO(this->get_logger(),
+                    "[FSM] Motor started. Entering RUNNING state.");
+        state = DriverState::RUNNING;
+        error_count = 0;
+      } else {
+        RCLCPP_ERROR(this->get_logger(), "[FSM] Failed to start motor.");
+        state = DriverState::RESETTING;
+      }
+      break;
+    }
+
+    // -----------------------------------------------------------------
+    // State 4: RUNNING
+    // -----------------------------------------------------------------
+    case DriverState::RUNNING: {
+      std::vector<sl_lidar_response_measurement_node_hq_t> nodes;
+      rclcpp::Time start_time = this->now();
+      bool success = false;
+
+      {
+        std::lock_guard<std::mutex> lock(driver_mutex_);
+        if (driver_->grab_scan_data(nodes)) {
+          success = true;
           error_count = 0;
         } else {
-          RCLCPP_ERROR(this->get_logger(), "[FSM] Failed to start motor.");
-          state = DriverState::RESETTING;
-        }
-        break;
-      }
-
-      // -----------------------------------------------------------------
-      // State 4: RUNNING
-      // -----------------------------------------------------------------
-      case DriverState::RUNNING: {
-        std::vector<sl_lidar_response_measurement_node_hq_t> nodes;
-        rclcpp::Time start_time = this->now();
-        bool success = false;
-
-        {
-          std::lock_guard<std::mutex> lock(driver_mutex_);
-          if (driver_->grab_scan_data(nodes)) {
-            success = true;
-            error_count = 0;
+          error_count++;
+          if (error_count > params_.max_retries) {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[FSM] Hardware unresponsive (Over %d errors). Resetting...",
+                params_.max_retries);
+            state = DriverState::RESETTING;
           } else {
-            error_count++;
-            if (error_count > MAX_ERROR_COUNT) {
-              RCLCPP_ERROR(this->get_logger(),
-                           "[FSM] Hardware unresponsive. Resetting...");
-              state = DriverState::RESETTING;
-            } else {
-              std::this_thread::sleep_for(1ms);
-            }
+            std::this_thread::sleep_for(1ms);
           }
         }
-
-        if (success && !nodes.empty()) {
-          double duration = (this->now() - start_time).seconds();
-          publish_scan(nodes, start_time, duration);
-        }
-
-        break;
       }
 
-      // -----------------------------------------------------------------
-      // State 5: RESETTING
-      // -----------------------------------------------------------------
-      case DriverState::RESETTING: {
-        RCLCPP_WARN(this->get_logger(),
-                    "[FSM] Performing hardware reset (recreating driver)...");
-
-        {
-          std::lock_guard<std::mutex> lock(driver_mutex_);
-
-          // Destroy current driver instance.
-          driver_.reset();
-
-          // Recreate a fresh driver instance.
-          if (params_.dummy_mode) {
-            driver_ = std::make_unique<DummyLidarDriver>();
-          } else {
-            driver_ = std::make_unique<RealLidarDriver>();
-          }
-        }
-
-        // Give the system a moment to settle.
-        std::this_thread::sleep_for(2000ms);
-
-        state = DriverState::CONNECTING;
-        error_count = 0;
-        break;
+      if (success && !nodes.empty()) {
+        double duration = (this->now() - start_time).seconds();
+        publish_scan(nodes, start_time, duration);
       }
+
+      break;
+    }
+
+    // -----------------------------------------------------------------
+    // State 5: RESETTING
+    // -----------------------------------------------------------------
+    case DriverState::RESETTING: {
+      RCLCPP_WARN(this->get_logger(),
+                  "[FSM] Performing hardware reset (recreating driver)...");
+
+      {
+        std::lock_guard<std::mutex> lock(driver_mutex_);
+
+        // Destroy current driver instance.
+        driver_.reset();
+
+        // Recreate a fresh driver instance.
+        if (params_.dummy_mode) {
+          driver_ = std::make_unique<DummyLidarDriver>();
+        } else {
+          driver_ = std::make_unique<RealLidarDriver>();
+        }
+      }
+
+      // Give the system a moment to settle.
+      std::this_thread::sleep_for(2000ms);
+
+      state = DriverState::CONNECTING;
+      error_count = 0;
+      break;
+    }
     }
 
     // When not actively running, slow down the loop slightly.
@@ -496,7 +499,7 @@ void RPlidarNode::scan_loop() {
 // ============================================================================
 
 void RPlidarNode::update_diagnostics(
-    diagnostic_updater::DiagnosticStatusWrapper& stat) {
+    diagnostic_updater::DiagnosticStatusWrapper &stat) {
   // Guard against concurrent access to the driver instance.
   std::lock_guard<std::mutex> lock(driver_mutex_);
 
@@ -535,7 +538,7 @@ void RPlidarNode::update_diagnostics(
  * @param scan_duration Total duration of the scan in seconds.
  */
 void RPlidarNode::publish_scan(
-    const std::vector<sl_lidar_response_measurement_node_hq_t>& nodes,
+    const std::vector<sl_lidar_response_measurement_node_hq_t> &nodes,
     rclcpp::Time start_time, double scan_duration) {
   if (nodes.empty()) {
     return;
@@ -554,12 +557,12 @@ void RPlidarNode::publish_scan(
   valid_points.reserve(nodes.size());
 
   bool is_new_protocol = false;
-  auto real_drv = dynamic_cast<RealLidarDriver*>(driver_.get());
+  auto real_drv = dynamic_cast<RealLidarDriver *>(driver_.get());
   if (real_drv && real_drv->is_new_type()) {
     is_new_protocol = true;
   }
 
-  for (const auto& node : nodes) {
+  for (const auto &node : nodes) {
     if (node.dist_mm_q2 == 0) {
       continue;
     }
@@ -585,7 +588,7 @@ void RPlidarNode::publish_scan(
   // ------------------------------------------------------------------------
   std::sort(
       valid_points.begin(), valid_points.end(),
-      [](const Point& a, const Point& b) { return a.angle_rad < b.angle_rad; });
+      [](const Point &a, const Point &b) { return a.angle_rad < b.angle_rad; });
 
   if (valid_points.empty()) {
     return;
@@ -619,7 +622,7 @@ void RPlidarNode::publish_scan(
     scan_msg.ranges.assign(beam_count, std::numeric_limits<float>::infinity());
     scan_msg.intensities.assign(beam_count, 0.0f);
 
-    for (const auto& p : valid_points) {
+    for (const auto &p : valid_points) {
       float angle = p.angle_rad;
 
       if (params_.inverted) {
@@ -665,7 +668,7 @@ void RPlidarNode::publish_scan(
 // ============================================================================
 
 rcl_interfaces::msg::SetParametersResult RPlidarNode::parameters_callback(
-    const std::vector<rclcpp::Parameter>& parameters) {
+    const std::vector<rclcpp::Parameter> &parameters) {
   std::lock_guard<std::mutex> lock(driver_mutex_);
 
   rcl_interfaces::msg::SetParametersResult result;
@@ -679,7 +682,7 @@ rcl_interfaces::msg::SetParametersResult RPlidarNode::parameters_callback(
     return result;
   }
 
-  for (const auto& param : parameters) {
+  for (const auto &param : parameters) {
     // --------------------------------------------------------------------
     // Case 1: RPM change
     // --------------------------------------------------------------------
@@ -720,7 +723,7 @@ rcl_interfaces::msg::SetParametersResult RPlidarNode::parameters_callback(
       std::string new_mode = param.as_string();
 
       if (new_mode == params_.scan_mode) {
-        continue;  // No change.
+        continue; // No change.
       }
 
       RCLCPP_WARN(
@@ -755,7 +758,7 @@ rcl_interfaces::msg::SetParametersResult RPlidarNode::parameters_callback(
 // main()
 // ============================================================================
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
 
   auto node = std::make_shared<RPlidarNode>();

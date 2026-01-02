@@ -94,14 +94,14 @@
  *  - @ref on_shutdown  : final cleanup for node destruction
  */
 class RPlidarNode final : public rclcpp_lifecycle::LifecycleNode {
- public:
+public:
   /**
    * @brief Construct an RPlidarNode.
    *
    * @param options Standard node options (namespace, parameters, etc.).
    */
   explicit RPlidarNode(
-      const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
+      const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
 
   /**
    * @brief Destructor.
@@ -127,7 +127,7 @@ class RPlidarNode final : public rclcpp_lifecycle::LifecycleNode {
    * @param state Current lifecycle state.
    * @return SUCCESS on successful configuration, FAILURE otherwise.
    */
-  CallbackReturn on_configure(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_configure(const rclcpp_lifecycle::State &state) override;
 
   /**
    * @brief Activate the node.
@@ -139,7 +139,7 @@ class RPlidarNode final : public rclcpp_lifecycle::LifecycleNode {
    * @param state Current lifecycle state.
    * @return SUCCESS if activation succeeds, FAILURE otherwise.
    */
-  CallbackReturn on_activate(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State &state) override;
 
   /**
    * @brief Deactivate the node.
@@ -151,7 +151,7 @@ class RPlidarNode final : public rclcpp_lifecycle::LifecycleNode {
    * @param state Current lifecycle state.
    * @return SUCCESS on successful deactivation, FAILURE otherwise.
    */
-  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State &state) override;
 
   /**
    * @brief Cleanup all resources associated with the node.
@@ -164,7 +164,7 @@ class RPlidarNode final : public rclcpp_lifecycle::LifecycleNode {
    * @param state Current lifecycle state.
    * @return SUCCESS on successful cleanup, FAILURE otherwise.
    */
-  CallbackReturn on_cleanup(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State &state) override;
 
   /**
    * @brief Shutdown hook for the node.
@@ -175,9 +175,9 @@ class RPlidarNode final : public rclcpp_lifecycle::LifecycleNode {
    * @param state Current lifecycle state.
    * @return SUCCESS on graceful shutdown, FAILURE otherwise.
    */
-  CallbackReturn on_shutdown(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_shutdown(const rclcpp_lifecycle::State &state) override;
 
- private:
+private:
   // ---------------------------------------------------------------------
   // Internal Helpers
   // ---------------------------------------------------------------------
@@ -211,7 +211,7 @@ class RPlidarNode final : public rclcpp_lifecycle::LifecycleNode {
    * @param scan_duration Duration of the scan in seconds.
    */
   void publish_scan(
-      const std::vector<sl_lidar_response_measurement_node_hq_t>& nodes,
+      const std::vector<sl_lidar_response_measurement_node_hq_t> &nodes,
       rclcpp::Time start_time, double scan_duration);
 
   /**
@@ -222,7 +222,7 @@ class RPlidarNode final : public rclcpp_lifecycle::LifecycleNode {
    *
    * @param stat Diagnostic status wrapper to be filled.
    */
-  void update_diagnostics(diagnostic_updater::DiagnosticStatusWrapper& stat);
+  void update_diagnostics(diagnostic_updater::DiagnosticStatusWrapper &stat);
 
   // ---------------------------------------------------------------------
   // Parameters
@@ -265,6 +265,9 @@ class RPlidarNode final : public rclcpp_lifecycle::LifecycleNode {
     /// Maximum range (in meters) to be used when publishing scans.
     float max_distance = 0.0f;
 
+    /// Number of connection retries before giving up.
+    int max_retries = 3;
+
     /**
      * @brief Whether to publish a static TF transform for the LIDAR frame.
      *
@@ -296,8 +299,8 @@ class RPlidarNode final : public rclcpp_lifecycle::LifecycleNode {
    * @param parameters List of parameters to be updated.
    * @return Result indicating whether the update is accepted or rejected.
    */
-  rcl_interfaces::msg::SetParametersResult parameters_callback(
-      const std::vector<rclcpp::Parameter>& parameters);
+  rcl_interfaces::msg::SetParametersResult
+  parameters_callback(const std::vector<rclcpp::Parameter> &parameters);
 
   /// Handle for the dynamic parameter callback registration.
   OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
@@ -321,4 +324,4 @@ class RPlidarNode final : public rclcpp_lifecycle::LifecycleNode {
   float cached_current_max_range_ = 12.0f;
 };
 
-#endif  // RPLIDAR_NODE_HPP_
+#endif // RPLIDAR_NODE_HPP_
