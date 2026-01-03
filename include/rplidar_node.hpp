@@ -72,6 +72,7 @@
 
 #include "lidar_driver_wrapper.hpp"
 
+enum class DriverState { CONNECTING, CHECK_HEALTH, WARMUP, RUNNING, RESETTING };
 /**
  * @class RPlidarNode
  * @brief Managed ROS 2 Lifecycle node for Slamtec RPLIDAR devices.
@@ -313,6 +314,9 @@ private:
 
   /// Flag indicating whether the scan loop should be running.
   std::atomic<bool> is_scanning_{false};
+
+  /// share fsm state across threads
+  std::atomic<DriverState> current_state_{DriverState::CONNECTING};
 
   /// Mutex protecting access to the driver instance from multiple threads.
   std::mutex driver_mutex_;

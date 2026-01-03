@@ -283,7 +283,6 @@ void RPlidarNode::init_parameters() {
   this->declare_parameter<bool>("publish_tf", true);
   this->get_parameter("publish_tf", params_.publish_tf);
 }
-
 // ============================================================================
 // Scan Loop (Fault-Tolerant FSM)
 // ============================================================================
@@ -299,26 +298,23 @@ void RPlidarNode::init_parameters() {
  *  - RESETTING    : Recreate driver instance to recover from persistent errors
  */
 void RPlidarNode::scan_loop() {
-  enum class DriverState {
-    CONNECTING,
-    CHECK_HEALTH,
-    WARMUP,
-    RUNNING,
-    RESETTING
-  };
+  // Initialize FSM state for this thread
+  current_state_.store(DriverState::CONNECTING);
 
-  DriverState state = DriverState::CONNECTING;
   int error_count = 0;
 
   RCLCPP_INFO(this->get_logger(), "[FSM] Scan loop started.");
 
   while (rclcpp::ok() && is_scanning_) {
+    // Read current FSM state from atomic variable
+    DriverState state = current_state_.load();
+
     switch (state) {
     // -----------------------------------------------------------------
     // State 1: CONNECTING
     // -----------------------------------------------------------------
     case DriverState::CONNECTING: {
-      // Ensure a driver instance exists (may have been reset).
+      // Ensure driver instance exists
       if (!driver_) {
         if (params_.dummy_mode) {
           driver_ = std::make_unique<DummyLidarDriver>();
@@ -327,35 +323,22 @@ void RPlidarNode::scan_loop() {
         }
       }
 
+      // Attempt connection
       if (!driver_->isConnected()) {
-        // Attempt to connect.
         if (!driver_->connect(params_.serial_port, params_.serial_baudrate,
                               params_.angle_compensate)) {
           RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                                "[FSM] Connection failed. Retrying...");
           std::this_thread::sleep_for(1000ms);
-          break;
+          break; // retry in next loop iteration
         }
 
-        // Sanity check: verify health immediately after connecting.
-        int health_code = driver_->getHealth();
-        if (health_code > 1) { // 2 = error
-          RCLCPP_WARN(this->get_logger(),
-                      "[FSM] Connection appears unhealthy (Health: %d). "
-                      "Disconnecting and retrying...",
-                      health_code);
-          driver_->disconnect();
-          std::this_thread::sleep_for(1000ms);
-          break;
-        }
-
-        RCLCPP_INFO(this->get_logger(),
-                    "[FSM] Connection established and verified.");
+        // Connection established
+        RCLCPP_INFO(this->get_logger(), "[FSM] Connection established.");
       }
 
-      // Detect model and protocol.
+      // Detect hardware and cache device info string
       driver_->detect_and_init_strategy();
-
       {
         auto real_drv = dynamic_cast<RealLidarDriver *>(driver_.get());
         if (real_drv) {
@@ -367,7 +350,8 @@ void RPlidarNode::scan_loop() {
                     cached_device_info_.c_str());
       }
 
-      state = DriverState::CHECK_HEALTH;
+      // Transition: CONNECTING -> CHECK_HEALTH
+      current_state_.store(DriverState::CHECK_HEALTH);
       break;
     }
 
@@ -377,15 +361,16 @@ void RPlidarNode::scan_loop() {
     case DriverState::CHECK_HEALTH: {
       int health = driver_->getHealth();
       if (health == 0 || health == 1) { // OK or Warning
-        state = DriverState::WARMUP;
+        // Transition: CHECK_HEALTH -> WARMUP
+        current_state_.store(DriverState::WARMUP);
       } else {
-        // If health is bad, treat as connection failure and retry.
         RCLCPP_ERROR(this->get_logger(),
                      "[FSM] Health error: %d. Disconnecting...", health);
-
         driver_->disconnect();
         std::this_thread::sleep_for(1000ms);
-        state = DriverState::CONNECTING;
+
+        // Transition: back to CONNECTING
+        current_state_.store(DriverState::CONNECTING);
       }
       break;
     }
@@ -408,14 +393,16 @@ void RPlidarNode::scan_loop() {
 
         RCLCPP_INFO(this->get_logger(), "[Config] Max Range: %.2f m",
                     cached_current_max_range_);
-
         RCLCPP_INFO(this->get_logger(),
                     "[FSM] Motor started. Entering RUNNING state.");
-        state = DriverState::RUNNING;
+
         error_count = 0;
+        // Transition: WARMUP -> RUNNING
+        current_state_.store(DriverState::RUNNING);
       } else {
         RCLCPP_ERROR(this->get_logger(), "[FSM] Failed to start motor.");
-        state = DriverState::RESETTING;
+        // Transition: failure -> RESETTING
+        current_state_.store(DriverState::RESETTING);
       }
       break;
     }
@@ -435,12 +422,14 @@ void RPlidarNode::scan_loop() {
           error_count = 0;
         } else {
           error_count++;
+          // Use max_retries parameter for hardware timeout behavior
           if (error_count > params_.max_retries) {
             RCLCPP_ERROR(
                 this->get_logger(),
                 "[FSM] Hardware unresponsive (Over %d errors). Resetting...",
                 params_.max_retries);
-            state = DriverState::RESETTING;
+            // Transition: error -> RESETTING
+            current_state_.store(DriverState::RESETTING);
           } else {
             std::this_thread::sleep_for(1ms);
           }
@@ -451,7 +440,6 @@ void RPlidarNode::scan_loop() {
         double duration = (this->now() - start_time).seconds();
         publish_scan(nodes, start_time, duration);
       }
-
       break;
     }
 
@@ -464,11 +452,8 @@ void RPlidarNode::scan_loop() {
 
       {
         std::lock_guard<std::mutex> lock(driver_mutex_);
+        driver_.reset(); // Destroy existing driver
 
-        // Destroy current driver instance.
-        driver_.reset();
-
-        // Recreate a fresh driver instance.
         if (params_.dummy_mode) {
           driver_ = std::make_unique<DummyLidarDriver>();
         } else {
@@ -476,17 +461,17 @@ void RPlidarNode::scan_loop() {
         }
       }
 
-      // Give the system a moment to settle.
       std::this_thread::sleep_for(2000ms);
 
-      state = DriverState::CONNECTING;
+      // Transition: RESETTING -> CONNECTING
+      current_state_.store(DriverState::CONNECTING);
       error_count = 0;
       break;
     }
     }
 
-    // When not actively running, slow down the loop slightly.
-    if (state != DriverState::RUNNING) {
+    // Reduce CPU usage when not actively scanning
+    if (current_state_.load() != DriverState::RUNNING) {
       std::this_thread::sleep_for(10ms);
     }
   }
@@ -500,30 +485,43 @@ void RPlidarNode::scan_loop() {
 
 void RPlidarNode::update_diagnostics(
     diagnostic_updater::DiagnosticStatusWrapper &stat) {
-  // Guard against concurrent access to the driver instance.
+
   std::lock_guard<std::mutex> lock(driver_mutex_);
 
-  // IMPORTANT:
-  // Do not call driver_->getHealth() here while the scan loop is running,
-  // as it may interfere with ongoing communication. Instead, rely on
-  // connection and scanning state.
-  if (driver_ && driver_->isConnected()) {
+  // Read current FSM state from atomic variable only
+  // (avoid calling driver_->isConnected() from here)
+  DriverState state = current_state_.load();
+
+  // 1. Report status based on FSM state
+  if (state == DriverState::RUNNING) {
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Scanning");
     stat.add("Connection", "Connected");
+    stat.add("Health Code", "OK (Scanning Active)");
+  } else if (state == DriverState::WARMUP) {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "Warming Up");
+    stat.add("Connection", "Connected (Starting Motor)");
+    stat.add("Health Code", "Warming Up");
+  } else if (state == DriverState::CONNECTING ||
+             state == DriverState::CHECK_HEALTH) {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "Connecting");
+    stat.add("Connection", "Connecting...");
+    stat.add("Health Code", "Initializing");
+  } else if (state == DriverState::RESETTING) {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR,
+                 "Hardware Error / Resetting");
+    stat.add("Connection", "Disconnected / Resetting");
+    stat.add("Health Code", "Error");
   } else {
-    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Disconnected");
-    stat.add("Connection", "Disconnected");
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR,
+                 "Unknown State");
+    stat.add("Connection", "Unknown");
+    stat.add("Health Code", "Unknown");
   }
 
+  // 2. Additional metadata
   stat.add("Serial Port", params_.serial_port);
   stat.add("Target RPM", params_.rpm);
   stat.add("Device Info", cached_device_info_);
-
-  if (is_scanning_) {
-    stat.add("Health Code", "OK (Scanning Active)");
-  } else {
-    stat.add("Health Code", "Unknown (Idle)");
-  }
 }
 
 // ============================================================================
