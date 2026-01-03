@@ -63,6 +63,8 @@
 #include <thread>
 #include <vector>
 
+#include <lifecycle_msgs/msg/state.hpp>
+
 using namespace std::chrono_literals;
 
 // ============================================================================
@@ -486,13 +488,29 @@ void RPlidarNode::scan_loop() {
 void RPlidarNode::update_diagnostics(
     diagnostic_updater::DiagnosticStatusWrapper &stat) {
 
+  // --------------------------------------------------------------------------
+  // [Gatekeeper] Check Lifecycle State first
+  // --------------------------------------------------------------------------
+  // If the node is not in the ACTIVE state, we should report "Inactive"
+  // regardless of the internal driver FSM state.
+  if (this->get_current_state().id() !=
+      lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Node Inactive");
+    stat.add("Lifecycle State", "Inactive");
+    // Preserve static info if available
+    stat.add("Serial Port", params_.serial_port);
+    stat.add("Device Info", cached_device_info_);
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // [Internal State] Report Driver FSM Status (Only when Active)
+  // --------------------------------------------------------------------------
   std::lock_guard<std::mutex> lock(driver_mutex_);
 
-  // Read current FSM state from atomic variable only
-  // (avoid calling driver_->isConnected() from here)
+  // Read current FSM state from atomic variable
   DriverState state = current_state_.load();
 
-  // 1. Report status based on FSM state
   if (state == DriverState::RUNNING) {
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Scanning");
     stat.add("Connection", "Connected");
@@ -518,7 +536,7 @@ void RPlidarNode::update_diagnostics(
     stat.add("Health Code", "Unknown");
   }
 
-  // 2. Additional metadata
+  // Additional metadata
   stat.add("Serial Port", params_.serial_port);
   stat.add("Target RPM", params_.rpm);
   stat.add("Device Info", cached_device_info_);
