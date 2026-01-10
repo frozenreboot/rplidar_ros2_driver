@@ -672,7 +672,8 @@ void RPlidarNode::publish_scan(
     scan_msg.intensities.resize(count);
 
     for (size_t i = 0; i < count; ++i) {
-      size_t idx = params_.inverted ? (count - 1 - i) : i;
+      // rplidar turn to CW
+      size_t idx = params_.inverted ? i : (count - 1 - i);
       scan_msg.ranges[idx] = valid_points[i].dist_m;
       scan_msg.intensities[idx] = valid_points[i].intensity;
     }
