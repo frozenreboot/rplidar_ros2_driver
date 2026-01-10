@@ -63,7 +63,7 @@ def generate_launch_description():
         package="rplidar_ros2_driver",
         plugin="RPlidarNode",  # name of macro-registered c++
         name="rplidar_node",
-        parameters=[params_file, {"qos_reliability": "best_effort"}],
+        parameters=[params_file],
         extra_arguments=[{"use_intra_process_comms": True}],  # Zero-Copy enabled
     )
 

@@ -62,6 +62,7 @@ from launch.events import matches_action
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import LifecycleNode
 from launch_ros.event_handlers import OnStateTransition
+from launch_ros.events.lifecycle import ChangeState
 from lifecycle_msgs.msg import Transition
 
 
@@ -80,50 +81,16 @@ def generate_launch_description() -> LaunchDescription:
     """
     share_dir = get_package_share_directory("rplidar_ros2_driver")
     node_name = "rplidar_node"
-
     # -------------------------------------------------------------------------
-    # 1. Launch Arguments (user-configurable options)
+    # 1. Launch Arguments
+    #    (Only keep system-level args. Parameter logic delegates to YAML)
     # -------------------------------------------------------------------------
     params_file_arg = DeclareLaunchArgument(
         "params_file",
         default_value=os.path.join(share_dir, "param", "rplidar.yaml"),
         description="Path to the ROS 2 parameters file to use.",
     )
-
-    rpm_arg = DeclareLaunchArgument(
-        "rpm",
-        default_value="0",
-        description="Motor RPM (0 = use driver default).",
-    )
-
-    scan_mode_arg = DeclareLaunchArgument(
-        "scan_mode",
-        default_value="",
-        description="Scan mode name (empty = use driver default).",
-    )
-
-    max_dist_arg = DeclareLaunchArgument(
-        "max_distance",
-        default_value="0.0",
-        description="Maximum range clip in meters (0.0 = use hardware limit).",
-    )
-
-    publish_tf_arg = DeclareLaunchArgument(
-        "publish_tf",
-        default_value="true",
-        description="If true, broadcast static TF internally.",
-    )
-
-    qos_arg = DeclareLaunchArgument(
-        "qos_reliability",
-        default_value="best_effort",
-        description="Reliability QoS policy for LaserScan publisher.",
-    )
-    max_retries_arg = DeclareLaunchArgument(
-        "max_retries",
-        default_value="3",
-        description="Number of allowed communication errors before reset.",
-    )
+    # YAML file is Single Source of Truth to avoid overriding issues.
     # -------------------------------------------------------------------------
     # 2. Lifecycle Node Definition
     # -------------------------------------------------------------------------
@@ -134,15 +101,8 @@ def generate_launch_description() -> LaunchDescription:
         namespace="",
         output="screen",
         parameters=[
-            LaunchConfiguration("params_file"),
-            {
-                "rpm": LaunchConfiguration("rpm"),
-                "scan_mode": LaunchConfiguration("scan_mode"),
-                "max_distance": LaunchConfiguration("max_distance"),
-                "publish_tf": LaunchConfiguration("publish_tf"),
-                "qos_reliability": LaunchConfiguration("qos_reliability"),
-                "max_retries": LaunchConfiguration("max_retries"),
-            },
+            # 오직 YAML 파일만 로드합니다.
+            LaunchConfiguration("params_file")
         ],
     )
 
@@ -183,24 +143,11 @@ def generate_launch_description() -> LaunchDescription:
         )
     )
 
-    # -------------------------------------------------------------------------
-    # 5. Assemble LaunchDescription
-    # -------------------------------------------------------------------------
     return LaunchDescription(
         [
             params_file_arg,
-            rpm_arg,
-            scan_mode_arg,
-            max_dist_arg,
-            publish_tf_arg,
-            qos_arg,
-            max_retries_arg,
             driver_node,
             configure_event,
             activate_event,
         ]
     )
-
-
-# Local import to avoid circular dependency at top-level
-from launch_ros.events.lifecycle import ChangeState  # noqa: E402
