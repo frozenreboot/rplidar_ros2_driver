@@ -96,9 +96,15 @@ rplidar_node:
     # =========================================================
 
     # max_distance:
-    #   Maximum range clip in meters.
+    #   Declared range_max in the published LaserScan, in meters.
     #   Set to 0.0 to use the hardware limit detected via the SDK
     #   (e.g. S3 -> 40.0 m).
+    #
+    #   Note: measurements are NOT clipped to this value yet. Consumers that
+    #   honour range_max (RViz, laser_filters) discard readings beyond it, but
+    #   ranges[] can still contain larger values, and consumers that ignore
+    #   range_max will see them. Actual clipping is planned for a future
+    #   release.
     max_distance: 0.0
 
     # dummy_mode:

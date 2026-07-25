@@ -117,7 +117,10 @@ def generate_launch_description() -> LaunchDescription:
     max_distance_arg = DeclareLaunchArgument(
         "max_distance",
         default_value="0.0",
-        description="Maximum range clip in meters (0.0 = use hardware limit).",
+        description=(
+            "Declared range_max in meters (0.0 = use hardware limit). "
+            "Data is not clipped to this value yet."
+        ),
     )
     dummy_mode_arg = DeclareLaunchArgument(
         "dummy_mode",

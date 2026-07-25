@@ -74,7 +74,8 @@ def generate_launch_description() -> LaunchDescription:
       - params_file     : Path to a YAML file containing node parameters
       - rpm             : Motor RPM (0 = let the driver choose a default)
       - scan_mode       : Scan mode name (empty = let the driver choose a default)
-      - max_distance    : Maximum range clip in meters (0.0 = use hardware limit)
+      - max_distance    : Declared range_max in meters (0.0 = use hardware limit).
+                          Data is not clipped to this value yet.
       - publish_tf      : Whether the node should broadcast a static TF transform
       - qos_reliability : Reliability QoS policy for the LaserScan publisher
                           (e.g., 'best_effort' or 'reliable')

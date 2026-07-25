@@ -4,6 +4,11 @@ Changelog for package rplidar_driver
 
 Forthcoming
 -----------
+* Corrected the ``max_distance`` documentation, which described the parameter
+  as a range clip. It only sets ``range_max`` on the published LaserScan;
+  measurements are not clipped, so ``ranges[]`` can hold values beyond it.
+  Consumers that honour ``range_max`` are unaffected, but those that ignore it
+  see the extra readings. Actual clipping is planned for a future release.
 * Fixed the driver never recovering from a latched device health error. A
   device reporting ``SL_LIDAR_STATUS_ERROR`` keeps reporting it until reset,
   but ``CHECK_HEALTH`` only disconnected and reconnected, so the FSM cycled
