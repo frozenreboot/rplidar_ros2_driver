@@ -463,6 +463,10 @@ private:
   // For newer models
   bool is_new_protocol_ = false;
 
+  /// Guards against reset loops: one reset attempt per health failure streak.
+  /// Owned by the scan thread only.
+  bool health_reset_attempted_ = false;
+
   // For some newer models, rpm should be set after grabbing the first scan.
   bool initial_reset_required_ = true;
 };

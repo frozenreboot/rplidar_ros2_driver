@@ -380,11 +380,24 @@ void RPlidarNode::scan_loop() {
     case DriverState::CHECK_HEALTH: {
       int health = driver_->getHealth();
       if (health == 0 || health == 1) { // OK or Warning
+        health_reset_attempted_ = false;
         // Transition: CHECK_HEALTH -> WARMUP
         current_state_.store(DriverState::WARMUP);
+      } else if (!health_reset_attempted_) {
+        // A device that latches SL_LIDAR_STATUS_ERROR keeps reporting it until
+        // it is explicitly reset; reconnecting alone never clears the flag and
+        // leaves the FSM cycling forever. Try the reset once per connection,
+        // then fall through to the reconnect path if it did not help.
+        RCLCPP_WARN(this->get_logger(),
+                    "[FSM] Health error: %d. Sending device reset...", health);
+        health_reset_attempted_ = true;
+        driver_->reset();
+        std::this_thread::sleep_for(2000ms);
       } else {
         RCLCPP_ERROR(this->get_logger(),
-                     "[FSM] Health error: %d. Disconnecting...", health);
+                     "[FSM] Health error: %d after reset. Disconnecting...",
+                     health);
+        health_reset_attempted_ = false;
         driver_->disconnect();
         std::this_thread::sleep_for(1000ms);
 

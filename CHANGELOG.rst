@@ -4,6 +4,12 @@ Changelog for package rplidar_driver
 
 Forthcoming
 -----------
+* Fixed the driver never recovering from a latched device health error. A
+  device reporting ``SL_LIDAR_STATUS_ERROR`` keeps reporting it until reset,
+  but ``CHECK_HEALTH`` only disconnected and reconnected, so the FSM cycled
+  forever and no scan was ever published. The already-implemented
+  ``reset()`` is now sent once per connection attempt before falling back to
+  the reconnect path.
 * Added the ``symmetric_angle_range`` parameter to publish LaserScan angles
   over ``[-pi, pi)`` instead of ``[0, 2*pi)``, matching sllidar_ros2 and the
   bounds that ``laser_filters`` and similar nodes expect. Defaults to ``false``
