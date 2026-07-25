@@ -385,6 +385,24 @@ private:
     // use_intensities parameter must be enabled to use this.
     bool intensities_as_angles = false;
 
+    /**
+     * @brief Publish LaserScan angles over [-pi, pi) instead of [0, 2*pi).
+     *
+     * The driver has reported angles over [0, 2*pi) since its first release,
+     * while most of the ROS 2 ecosystem (laser_filters, sllidar_ros2, and
+     * anything assuming a forward-facing zero) expects a range centered on
+     * zero. This flag opts into the symmetric convention without breaking
+     * existing deployments.
+     *
+     * @warning Temporary compatibility shim. Defaulting to the asymmetric
+     *          range is the actual bug; this parameter only lets users work
+     *          around it. The symmetric range is intended to become the sole
+     *          behaviour in the next major release, at which point this
+     *          parameter is removed rather than flipped. Do not build new
+     *          features on top of the [0, 2*pi) branch.
+     */
+    bool symmetric_angle_range = false;
+
     // QoS policy for the publishers
     std::string qos_policy = "sensor_data";
   } params_;

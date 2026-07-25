@@ -2,6 +2,18 @@
 Changelog for package rplidar_driver
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* Added the ``symmetric_angle_range`` parameter to publish LaserScan angles
+  over ``[-pi, pi)`` instead of ``[0, 2*pi)``, matching sllidar_ros2 and the
+  bounds that ``laser_filters`` and similar nodes expect. Defaults to ``false``
+  to preserve existing behaviour; the symmetric range becomes unconditional and
+  the parameter is removed in the next major release.
+* Fixed angle normalization dropping out of range for ``angle_offset`` values
+  larger than a full turn.
+* Fixed the ``interpolated_rays`` ray grid being anchored at zero instead of at
+  ``angle_min``.
+
 1.4.1 (2026-07-18)
 ------------------
 * Fixed the Rolling build by passing the node by reference to

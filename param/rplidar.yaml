@@ -149,7 +149,33 @@ rplidar_node:
     #   Examples:
     #     - Standard devices (S-Series): 0.0
     #     - Legacy A1/A2 (cable-side zero): 3.1415926  # 180 degrees
+    #
+    #   Note that this rotates the scan but does not move the reported angle
+    #   range: the offset is applied before wrapping, so angle_min/angle_max
+    #   stay wherever symmetric_angle_range puts them. Use this to align the
+    #   sensor, not to satisfy a downstream node's expected bounds.
     angle_offset: 0.0
+
+    # symmetric_angle_range:
+    #   Report LaserScan angles over [-pi, pi) instead of [0, 2*pi).
+    #
+    #   This driver has published angle_min = 0.0 / angle_max = 2*pi since its
+    #   first release, but most of the ROS 2 ecosystem assumes a range centered
+    #   on zero. sllidar_ros2 publishes [-pi, pi), and nodes such as
+    #   laser_filters' LaserScanAngularBoundsFilter are configured accordingly.
+    #   With the default (false), a filter set to -3.141 .. 3.141 discards half
+    #   of the scan, and no angle_offset value can fix that -- see above.
+    #
+    #   Set to true if you are replacing sllidar_ros2 or feeding any node that
+    #   expects the symmetric convention. Physical orientation is unchanged;
+    #   only the reported bounds and the corresponding array ordering move.
+    #
+    #   TEMPORARY: the asymmetric default is the actual defect here, and this
+    #   parameter only exists so current deployments keep working. The next
+    #   major release publishes [-pi, pi) unconditionally and drops this
+    #   parameter -- it will not be flipped to true, it will be removed. Treat
+    #   `true` as the forward-compatible setting.
+    symmetric_angle_range: false
 
     # =========================================================
     # [5] Debugging
