@@ -2,22 +2,6 @@
 Changelog for package rplidar_driver
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
-* Added a ``STANDBY`` driver state together with ``stop_motor`` and
-  ``start_motor`` services (``std_srvs/srv/Empty``), which park the motor
-  without leaving the ACTIVE lifecycle state. The serial connection, the scan
-  thread and the publishers stay alive, so waking up only costs the motor
-  spin-up time. Service names match ``rplidar_ros``.
-* Added the ``auto_standby`` parameter (default ``false``), which lets the
-  subscriber count drive the motor: the device parks itself when the last
-  consumer of the scan topic disconnects and spins up again when one appears.
-  Cloud subscribers are counted as well when ``publish_point_cloud`` is
-  enabled. While enabled, the two services are rejected, as in ``rplidar_ros``.
-* Extended the diagnostics to report standby and to distinguish an automatic
-  standby ("no subscribers") from a manually requested one.
-* Contributors: fszkudlarek
-
 1.4.1 (2026-07-18)
 ------------------
 * Fixed the Rolling build by passing the node by reference to

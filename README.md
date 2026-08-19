@@ -95,9 +95,7 @@ ros2 param set /rplidar_node auto_standby true
 ```
 
 While `auto_standby` is enabled the two services are rejected, so the
-subscriber count stays the single source of truth. Service names, the
-parameter name and this precedence all match `rplidar_ros`, so existing
-tooling keeps working.
+subscriber count stays the single source of truth.
 
 Diagnostics say *why* the motor is idle, which is usually the question:
 
