@@ -254,6 +254,16 @@ private:
   void scan_loop();
 
   /**
+   * @brief Count the subscribers the scan thread is producing data for.
+   *
+   * Includes the PointCloud2 subscribers when @c publish_point_cloud is
+   * enabled, so that a cloud-only consumer keeps the motor spinning.
+   *
+   * @return Total number of connected subscribers.
+   */
+  size_t count_output_subscribers() const;
+
+  /**
    * @brief Service callback requesting the STANDBY state (motor off).
    *
    * The request is only recorded here; the actual transition is performed by
@@ -416,6 +426,18 @@ private:
 
     // QoS policy for the publishers
     std::string qos_policy = "sensor_data";
+
+    /**
+     * @brief Automatically enter STANDBY while nobody subscribes.
+     *
+     * When enabled, the node stops the motor as soon as the last subscriber
+     * of the scan (and, if enabled, cloud) topic disconnects, and restarts it
+     * when a subscriber appears again.
+     *
+     * While this is enabled the @c stop_motor / @c start_motor services are
+     * rejected: the subscriber count is the single source of truth.
+     */
+    bool auto_standby = false;
   } params_;
 
   // ---------------------------------------------------------------------
@@ -468,8 +490,17 @@ private:
   /// share fsm state across threads
   std::atomic<DriverState> current_state_{DriverState::CONNECTING};
 
-  /// Requested standby state, consumed by @ref scan_loop() on each iteration.
+  /// Standby explicitly requested through the services, consumed by
+  /// @ref scan_loop() on each iteration.
   std::atomic<bool> standby_requested_{false};
+
+  /// Runtime-updatable mirror of @ref Parameters::auto_standby, read by the
+  /// scan thread and written by the parameter callback.
+  std::atomic<bool> auto_standby_enabled_{false};
+
+  /// True while STANDBY is held because no subscriber is connected.
+  /// Written by the scan thread, read by the diagnostics callback.
+  std::atomic<bool> auto_standby_engaged_{false};
 
   /// Mutex protecting access to the driver instance from multiple threads.
   std::mutex driver_mutex_;

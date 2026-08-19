@@ -238,7 +238,10 @@ RPlidarNode::on_activate(const rclcpp_lifecycle::State &state) {
   }
   // Activation always means "start scanning": a standby request issued during
   // a previous ACTIVE period must not survive the lifecycle transition.
+  // With 'auto_standby' the scan loop re-evaluates the subscriber count
+  // immediately anyway.
   standby_requested_ = false;
+  auto_standby_engaged_ = false;
 
   // Start scan loop thread.
   is_scanning_ = true;
@@ -318,6 +321,8 @@ void RPlidarNode::init_parameters() {
   init_param("publish_point_cloud", params_.publish_point_cloud);
   init_param("interpolated_rays", params_.interpolated_rays);
   init_param("computed_ray_count", params_.computed_ray_count);
+  init_param("auto_standby", params_.auto_standby);
+  auto_standby_enabled_.store(params_.auto_standby);
 }
 // ============================================================================
 // Scan Loop (Fault-Tolerant FSM)
@@ -332,13 +337,20 @@ void RPlidarNode::init_parameters() {
  *  - WARMUP       : Start motor and configure scan mode
  *  - RUNNING      : Continuously grab scan data and publish LaserScan
  *  - RESETTING    : Recreate driver instance to recover from persistent errors
- *  - STANDBY      : Motor stopped on user request, connection kept alive
+ *  - STANDBY      : Motor stopped (service request or 'auto_standby' with no
+ *                   subscribers), connection kept alive
  */
 void RPlidarNode::scan_loop() {
   // Initialize FSM state for this thread
   current_state_.store(DriverState::CONNECTING);
 
   int error_count = 0;
+
+  // Subscriber polling is throttled: the count only has to be accurate to
+  // within a fraction of a second, and this loop can spin very fast.
+  constexpr auto SUBSCRIBER_POLL_PERIOD = 200ms;
+  auto last_subscriber_poll =
+      std::chrono::steady_clock::now() - SUBSCRIBER_POLL_PERIOD;
 
   RCLCPP_INFO(this->get_logger(), "[FSM] Scan loop started.");
 
@@ -347,12 +359,40 @@ void RPlidarNode::scan_loop() {
     DriverState state = current_state_.load();
 
     // -----------------------------------------------------------------
+    // Auto standby: follow subscriber demand.
+    //
+    // Standby is only entered from RUNNING, so the device is always
+    // detected, health-checked and reported once before the motor is
+    // allowed to idle. Waking up is permitted from STANDBY at any time.
+    // -----------------------------------------------------------------
+    if (auto_standby_enabled_.load()) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last_subscriber_poll >= SUBSCRIBER_POLL_PERIOD) {
+        last_subscriber_poll = now;
+        const size_t subscribers = count_output_subscribers();
+
+        if (subscribers == 0 && state == DriverState::RUNNING) {
+          RCLCPP_INFO(this->get_logger(),
+                      "[Standby] No subscribers left, going to standby.");
+          auto_standby_engaged_.store(true);
+        } else if (subscribers > 0 && auto_standby_engaged_.load()) {
+          RCLCPP_INFO(this->get_logger(),
+                      "[Standby] Subscriber connected, waking up.");
+          auto_standby_engaged_.store(false);
+        }
+      }
+    } else {
+      auto_standby_engaged_.store(false);
+    }
+
+    // -----------------------------------------------------------------
     // Standby requests are handled here, before the switch, so that they
     // take precedence over any transition the FSM is about to perform.
     // The service callbacks only set the flag; every state change stays
     // owned by this thread.
     // -----------------------------------------------------------------
-    const bool want_standby = standby_requested_.load();
+    const bool want_standby =
+        standby_requested_.load() || auto_standby_engaged_.load();
 
     if (want_standby && state != DriverState::STANDBY) {
       RCLCPP_INFO(this->get_logger(),
@@ -568,13 +608,33 @@ void RPlidarNode::scan_loop() {
 }
 
 // ============================================================================
-// Standby Services
+// Standby
 // ============================================================================
+
+size_t RPlidarNode::count_output_subscribers() const {
+  size_t subscribers = 0;
+
+  if (scan_pub_) {
+    subscribers += scan_pub_->get_subscription_count();
+  }
+  if (params_.publish_point_cloud && cloud_pub_) {
+    subscribers += cloud_pub_->get_subscription_count();
+  }
+
+  return subscribers;
+}
 
 void RPlidarNode::handle_stop_motor(
     const std::shared_ptr<rmw_request_id_t>,
     const std::shared_ptr<std_srvs::srv::Empty::Request>,
     std::shared_ptr<std_srvs::srv::Empty::Response>) {
+
+  if (auto_standby_enabled_.load()) {
+    RCLCPP_WARN(this->get_logger(),
+                "[Standby] Ignoring stop_motor request: 'auto_standby' is "
+                "enabled, the subscriber count controls the motor.");
+    return;
+  }
 
   RCLCPP_INFO(this->get_logger(), "[Standby] stop_motor requested.");
   standby_requested_.store(true);
@@ -584,6 +644,13 @@ void RPlidarNode::handle_start_motor(
     const std::shared_ptr<rmw_request_id_t>,
     const std::shared_ptr<std_srvs::srv::Empty::Request>,
     std::shared_ptr<std_srvs::srv::Empty::Response>) {
+
+  if (auto_standby_enabled_.load()) {
+    RCLCPP_WARN(this->get_logger(),
+                "[Standby] Ignoring start_motor request: 'auto_standby' is "
+                "enabled, the subscriber count controls the motor.");
+    return;
+  }
 
   RCLCPP_INFO(this->get_logger(), "[Standby] start_motor requested.");
   standby_requested_.store(false);
@@ -638,10 +705,15 @@ void RPlidarNode::update_diagnostics(
     stat.add("Connection", "Disconnected / Resetting");
     stat.add("Health Code", "Error");
   } else if (state == DriverState::STANDBY) {
+    // Spell out *why* the motor is off: "auto_standby with no subscribers"
+    // is the most common source of "my lidar does not spin" reports.
+    const bool auto_engaged = auto_standby_engaged_.load();
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK,
-                 "Standby (motor off)");
+                 auto_engaged ? "Standby (auto: no subscribers)"
+                              : "Standby (motor off)");
     stat.add("Connection", "Connected (Motor Stopped)");
     stat.add("Health Code", "OK (Standby)");
+    stat.add("Standby Trigger", auto_engaged ? "auto_standby" : "stop_motor");
   } else {
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR,
                  "Unknown State");
@@ -653,6 +725,7 @@ void RPlidarNode::update_diagnostics(
   stat.add("Serial Port", params_.serial_port);
   stat.add("Target RPM", params_.rpm);
   stat.add("Device Info", cached_device_info_);
+  stat.add("Auto Standby", auto_standby_enabled_.load() ? "ON" : "OFF");
 }
 
 // ============================================================================
@@ -948,7 +1021,26 @@ rcl_interfaces::msg::SetParametersResult RPlidarNode::parameters_callback(
     }
 
     // --------------------------------------------------------------------
-    // Case 5: Scan mode change (requires motor restart)
+    // Case 5: Auto standby toggle
+    // --------------------------------------------------------------------
+    else if (param.get_name() == "auto_standby" &&
+             param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
+      params_.auto_standby = param.as_bool();
+      auto_standby_enabled_.store(params_.auto_standby);
+
+      // Turning it off must not leave the device parked in an automatic
+      // standby nobody can leave through the services.
+      if (!params_.auto_standby) {
+        auto_standby_engaged_.store(false);
+        standby_requested_.store(false);
+      }
+
+      RCLCPP_INFO(this->get_logger(), "[Dynamic] Auto standby: %s",
+                  params_.auto_standby ? "ON" : "OFF");
+    }
+
+    // --------------------------------------------------------------------
+    // Case 6: Scan mode change (requires motor restart)
     // --------------------------------------------------------------------
     else if (param.get_name() == "scan_mode" &&
              param.get_type() == rclcpp::ParameterType::PARAMETER_STRING) {
@@ -990,7 +1082,7 @@ rcl_interfaces::msg::SetParametersResult RPlidarNode::parameters_callback(
     }
 
     // --------------------------------------------------------------------
-    // Case 6: In ROS2, all parameters are configurable. Warn for unsupported
+    // Case 7: In ROS2, all parameters are configurable. Warn for unsupported
     // --------------------------------------------------------------------
     else {
       RCLCPP_WARN(
