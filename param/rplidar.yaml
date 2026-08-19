@@ -47,6 +47,20 @@ rplidar_node:
     #   supported freq from its datasheet.
     rpm: 0
 
+    # auto_standby:
+    #   false: The motor keeps spinning as long as the node is ACTIVE. Use the
+    #          'stop_motor' / 'start_motor' services to park it manually.
+    #   true : The motor is stopped automatically when the last subscriber of
+    #          the scan topic (and of the cloud topic, if publish_point_cloud
+    #          is enabled) disconnects, and restarts when one connects again.
+    #          The serial connection stays open, so waking up only costs the
+    #          motor spin-up time.
+    #
+    #          While enabled, the 'stop_motor' / 'start_motor' services are
+    #          rejected: the subscriber count is the only thing driving the
+    #          motor.
+    auto_standby: false
+
     # ---------------------------------------------------------
     # [Measurement Quality & Performance]
     # ---------------------------------------------------------

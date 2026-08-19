@@ -34,11 +34,19 @@ sequenceDiagram
         Node->>Node: Publish LaserScan msg
     end
 
-    Note over Node: 4. on_deactivate()
+    Note over Node: 4. Standby (stop_motor service or auto_standby)
+    Node->>Driver: stop_motor()
+    Driver->>SDK: Send Stop Command + Motor Speed 0
+    Note over Node,SDK: Serial port stays open, node stays ACTIVE
+    Node->>Driver: start_motor() (service call, or a subscriber appears)
+    Driver->>SDK: Restart Motor + Scan
+    Note over Node: Back to the running loop
+
+    Note over Node: 5. on_deactivate()
     Node->>Driver: stop_motor()
     Driver->>SDK: Send Stop Command
 
-    Note over Node: 5. on_cleanup()
+    Note over Node: 6. on_cleanup()
     Node->>Driver: disconnect()
     Driver->>SDK: Close Serial Port
 ```

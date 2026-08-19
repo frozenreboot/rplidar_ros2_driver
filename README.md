@@ -75,6 +75,34 @@ ros2 param set /rplidar_node rpm 1000
 ros2 param set /rplidar_node scan_mode DenseBoost
 ```
 
+### Standby (Motor Control)
+
+Park the motor without leaving the ACTIVE state. The serial connection, the
+scan thread and the publishers all stay up, so waking costs only the motor
+spin-up time:
+
+```bash
+ros2 service call /stop_motor std_srvs/srv/Trigger
+ros2 service call /start_motor std_srvs/srv/Trigger
+```
+
+Or let the driver follow demand. With `auto_standby` the motor stops while
+nobody subscribes to `scan` (or to `cloud`, when `publish_point_cloud` is
+enabled) and restarts as soon as somebody does:
+
+```bash
+ros2 param set /rplidar_node auto_standby true
+```
+
+While `auto_standby` is enabled the two services are rejected, so the
+subscriber count stays the single source of truth.
+
+Diagnostics say *why* the motor is idle, which is usually the question:
+
+```bash
+ros2 topic echo /diagnostics    # "Standby (auto: no subscribers)" vs "Standby (motor off)"
+```
+
 ---
 
 ## 🧪 Call for Experiments: "Does it survive?"

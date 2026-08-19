@@ -26,6 +26,7 @@
   <depend>tf2_ros</depend>
   <depend>geometry_msgs</depend>
   <depend>lifecycle_msgs</depend>
+  <depend>std_srvs</depend>
 
   <exec_depend>launch_ros</exec_depend>
 
