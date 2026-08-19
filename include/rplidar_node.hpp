@@ -472,10 +472,10 @@ private:
   /// Handle for the dynamic parameter callback registration.
   OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 
-  /// Service putting the device into STANDBY (rplidar_ros compatible name).
+  /// Service putting the device into STANDBY.
   rclcpp::Service<std_srvs::srv::Empty>::SharedPtr stop_motor_service_;
 
-  /// Service leaving STANDBY (rplidar_ros compatible name).
+  /// Service leaving STANDBY.
   rclcpp::Service<std_srvs::srv::Empty>::SharedPtr start_motor_service_;
 
   /// Diagnostic updater instance used to report node and device health.

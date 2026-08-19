@@ -139,7 +139,7 @@ RPlidarNode::on_configure(const rclcpp_lifecycle::State &) {
       &RPlidarNode::parameters_callback, this, std::placeholders::_1));
 
   // ------------------------------------------------------------------------
-  // 3b. Standby services (names kept compatible with rplidar_ros)
+  // 3b. Standby services
   // ------------------------------------------------------------------------
   stop_motor_service_ = this->create_service<std_srvs::srv::Empty>(
       "stop_motor",
@@ -705,8 +705,6 @@ void RPlidarNode::update_diagnostics(
     stat.add("Connection", "Disconnected / Resetting");
     stat.add("Health Code", "Error");
   } else if (state == DriverState::STANDBY) {
-    // Spell out *why* the motor is off: "auto_standby with no subscribers"
-    // is the most common source of "my lidar does not spin" reports.
     const bool auto_engaged = auto_standby_engaged_.load();
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK,
                  auto_engaged ? "Standby (auto: no subscribers)"
