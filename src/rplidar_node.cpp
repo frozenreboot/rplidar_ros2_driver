@@ -682,7 +682,7 @@ void RPlidarNode::handle_start_motor(
   response->success = true;
   response->message = was_requested
                           ? "Wake-up requested, the motor restarts shortly."
-                          : "The driver was not in a requested standby.";
+                          : "The driver was not in standby, nothing to do.";
 
   RCLCPP_INFO(this->get_logger(), "[Standby] start_motor: %s",
               response->message.c_str());

@@ -440,3 +440,49 @@ TEST_F(RplidarNodeTest, AutoStandbyIgnoresStopMotorService) {
   node->trigger_transition(
       rclcpp_lifecycle::Transition(Transition::TRANSITION_DEACTIVATE));
 }
+
+/**
+ * @brief [Behavioral Test] Standby request outside the ACTIVE state
+ * The scan loop is what applies a standby request, and it only runs while the
+ * node is ACTIVE. A request arriving in INACTIVE must therefore be refused
+ * instead of being recorded into a flag nobody will ever read.
+ */
+TEST_F(RplidarNodeTest, StandbyServiceRefusedWhileInactive) {
+  rclcpp::NodeOptions options;
+  options.append_parameter_override("dummy_mode", true);
+
+  auto node = std::make_shared<rplidar_driver::RPlidarNode>(options);
+  auto client_node = std::make_shared<rclcpp::Node>("standby_inactive_client");
+
+  // Configure only: the services are created in on_configure, but the scan
+  // loop is not started until on_activate.
+  node->trigger_transition(
+      rclcpp_lifecycle::Transition(Transition::TRANSITION_CONFIGURE));
+  ASSERT_EQ(node->get_current_state().id(), State::PRIMARY_STATE_INACTIVE);
+
+  auto stop_client =
+      client_node->create_client<std_srvs::srv::Trigger>("stop_motor");
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node->get_node_base_interface());
+  executor.add_node(client_node);
+
+  ASSERT_TRUE(stop_client->wait_for_service(std::chrono::seconds(3)))
+      << "'stop_motor' must be reachable in the INACTIVE state.";
+
+  auto future = stop_client->async_send_request(
+      std::make_shared<std_srvs::srv::Trigger::Request>());
+  ASSERT_EQ(
+      executor.spin_until_future_complete(future, std::chrono::seconds(3)),
+      rclcpp::FutureReturnCode::SUCCESS);
+
+  auto response = future.get();
+  EXPECT_FALSE(response->success)
+      << "'stop_motor' must report failure while the node is not ACTIVE.";
+  EXPECT_NE(response->message.find("ACTIVE"), std::string::npos)
+      << "The refusal should name the reason. Got: " << response->message;
+
+  // Clean shutdown
+  node->trigger_transition(
+      rclcpp_lifecycle::Transition(Transition::TRANSITION_CLEANUP));
+}
