@@ -82,8 +82,8 @@ scan thread and the publishers all stay up, so waking costs only the motor
 spin-up time:
 
 ```bash
-ros2 service call /stop_motor std_srvs/srv/Empty
-ros2 service call /start_motor std_srvs/srv/Empty
+ros2 service call /stop_motor std_srvs/srv/Trigger
+ros2 service call /start_motor std_srvs/srv/Trigger
 ```
 
 Or let the driver follow demand. With `auto_standby` the motor stops while

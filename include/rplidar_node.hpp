@@ -85,7 +85,7 @@
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
-#include <std_srvs/srv/empty.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <thread>
 #include <vector>
 
@@ -264,15 +264,32 @@ private:
   size_t count_output_subscribers() const;
 
   /**
+   * @brief Common guard shared by the two manual standby services.
+   *
+   * A manual request is refused when @c auto_standby owns the motor, or when
+   * the node is not ACTIVE and the scan loop that applies the request is
+   * therefore not running.
+   *
+   * @param service_name Service name, used for logging only.
+   * @param[out] response Filled in with the reason when the request is
+   *             refused; left untouched otherwise.
+   * @return true if the request was refused and the caller should return.
+   */
+  bool standby_request_refused(const char *service_name,
+                               std_srvs::srv::Trigger::Response &response);
+
+  /**
    * @brief Service callback requesting the STANDBY state (motor off).
    *
    * The request is only recorded here; the actual transition is performed by
-   * @ref scan_loop() so that the FSM stays owned by a single thread.
+   * @ref scan_loop() so that the FSM stays owned by a single thread. The
+   * response therefore reports whether the request was accepted, not whether
+   * the motor has already spun down.
    */
   void handle_stop_motor(
       const std::shared_ptr<rmw_request_id_t> request_header,
-      const std::shared_ptr<std_srvs::srv::Empty::Request> request,
-      std::shared_ptr<std_srvs::srv::Empty::Response> response);
+      const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
   /**
    * @brief Service callback leaving the STANDBY state (motor on).
@@ -281,8 +298,8 @@ private:
    */
   void handle_start_motor(
       const std::shared_ptr<rmw_request_id_t> request_header,
-      const std::shared_ptr<std_srvs::srv::Empty::Request> request,
-      std::shared_ptr<std_srvs::srv::Empty::Response> response);
+      const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
   /**
    * @brief Publish LaserScan & PointCloud2 (if enabled) messages.
@@ -473,10 +490,10 @@ private:
   OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 
   /// Service putting the device into STANDBY.
-  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr stop_motor_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_motor_service_;
 
   /// Service leaving STANDBY.
-  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr start_motor_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_motor_service_;
 
   /// Diagnostic updater instance used to report node and device health.
   diagnostic_updater::Updater diagnostic_updater_;

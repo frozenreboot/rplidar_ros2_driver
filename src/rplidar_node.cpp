@@ -141,12 +141,12 @@ RPlidarNode::on_configure(const rclcpp_lifecycle::State &) {
   // ------------------------------------------------------------------------
   // 3b. Standby services
   // ------------------------------------------------------------------------
-  stop_motor_service_ = this->create_service<std_srvs::srv::Empty>(
+  stop_motor_service_ = this->create_service<std_srvs::srv::Trigger>(
       "stop_motor",
       std::bind(&RPlidarNode::handle_stop_motor, this, std::placeholders::_1,
                 std::placeholders::_2, std::placeholders::_3));
 
-  start_motor_service_ = this->create_service<std_srvs::srv::Empty>(
+  start_motor_service_ = this->create_service<std_srvs::srv::Trigger>(
       "start_motor",
       std::bind(&RPlidarNode::handle_start_motor, this, std::placeholders::_1,
                 std::placeholders::_2, std::placeholders::_3));
@@ -624,36 +624,68 @@ size_t RPlidarNode::count_output_subscribers() const {
   return subscribers;
 }
 
-void RPlidarNode::handle_stop_motor(
-    const std::shared_ptr<rmw_request_id_t>,
-    const std::shared_ptr<std_srvs::srv::Empty::Request>,
-    std::shared_ptr<std_srvs::srv::Empty::Response>) {
+bool RPlidarNode::standby_request_refused(
+    const char *service_name, std_srvs::srv::Trigger::Response &response) {
 
   if (auto_standby_enabled_.load()) {
-    RCLCPP_WARN(this->get_logger(),
-                "[Standby] Ignoring stop_motor request: 'auto_standby' is "
-                "enabled, the subscriber count controls the motor.");
+    response.success = false;
+    response.message = "Refused: 'auto_standby' is enabled, the subscriber "
+                       "count controls the motor.";
+  } else if (this->get_current_state().id() !=
+             lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+    // The scan loop applies the request, and it only runs while ACTIVE.
+    response.success = false;
+    response.message = "Refused: the node is not ACTIVE, so the scan loop "
+                       "cannot apply the request.";
+  } else {
+    return false;
+  }
+
+  RCLCPP_WARN(this->get_logger(), "[Standby] %s: %s", service_name,
+              response.message.c_str());
+  return true;
+}
+
+void RPlidarNode::handle_stop_motor(
+    const std::shared_ptr<rmw_request_id_t>,
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+
+  if (standby_request_refused("stop_motor", *response)) {
     return;
   }
 
-  RCLCPP_INFO(this->get_logger(), "[Standby] stop_motor requested.");
-  standby_requested_.store(true);
+  // The scan loop picks the flag up on its next iteration, so report that the
+  // request was accepted rather than that the motor has already stopped.
+  const bool was_requested = standby_requested_.exchange(true);
+
+  response->success = true;
+  response->message = was_requested
+                          ? "Standby had already been requested."
+                          : "Standby requested, the motor stops shortly.";
+
+  RCLCPP_INFO(this->get_logger(), "[Standby] stop_motor: %s",
+              response->message.c_str());
 }
 
 void RPlidarNode::handle_start_motor(
     const std::shared_ptr<rmw_request_id_t>,
-    const std::shared_ptr<std_srvs::srv::Empty::Request>,
-    std::shared_ptr<std_srvs::srv::Empty::Response>) {
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
 
-  if (auto_standby_enabled_.load()) {
-    RCLCPP_WARN(this->get_logger(),
-                "[Standby] Ignoring start_motor request: 'auto_standby' is "
-                "enabled, the subscriber count controls the motor.");
+  if (standby_request_refused("start_motor", *response)) {
     return;
   }
 
-  RCLCPP_INFO(this->get_logger(), "[Standby] start_motor requested.");
-  standby_requested_.store(false);
+  const bool was_requested = standby_requested_.exchange(false);
+
+  response->success = true;
+  response->message = was_requested
+                          ? "Wake-up requested, the motor restarts shortly."
+                          : "The driver was not in a requested standby.";
+
+  RCLCPP_INFO(this->get_logger(), "[Standby] start_motor: %s",
+              response->message.c_str());
 }
 
 // ============================================================================

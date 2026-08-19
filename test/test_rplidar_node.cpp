@@ -8,7 +8,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
-#include <std_srvs/srv/empty.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include "rplidar_node.hpp"
 
@@ -183,9 +183,9 @@ TEST_F(RplidarNodeTest, StandbyServiceTogglesScanning) {
       [&scan_count](sensor_msgs::msg::LaserScan::SharedPtr) { scan_count++; });
 
   auto stop_client =
-      client_node->create_client<std_srvs::srv::Empty>("stop_motor");
+      client_node->create_client<std_srvs::srv::Trigger>("stop_motor");
   auto start_client =
-      client_node->create_client<std_srvs::srv::Empty>("start_motor");
+      client_node->create_client<std_srvs::srv::Trigger>("start_motor");
 
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(node->get_node_base_interface());
@@ -201,17 +201,21 @@ TEST_F(RplidarNodeTest, StandbyServiceTogglesScanning) {
   };
 
   // Call a service and pump the executor until the response arrives.
+  // Returns nullptr if the call timed out.
   auto call_service =
-      [&executor](rclcpp::Client<std_srvs::srv::Empty>::SharedPtr client) {
-        EXPECT_TRUE(client->wait_for_service(std::chrono::seconds(3)))
-            << "Service '" << client->get_service_name() << "' never appeared.";
+      [&executor](rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr client)
+      -> std_srvs::srv::Trigger::Response::SharedPtr {
+    EXPECT_TRUE(client->wait_for_service(std::chrono::seconds(3)))
+        << "Service '" << client->get_service_name() << "' never appeared.";
 
-        auto future = client->async_send_request(
-            std::make_shared<std_srvs::srv::Empty::Request>());
-        return executor.spin_until_future_complete(future,
-                                                   std::chrono::seconds(3)) ==
-               rclcpp::FutureReturnCode::SUCCESS;
-      };
+    auto future = client->async_send_request(
+        std::make_shared<std_srvs::srv::Trigger::Request>());
+    if (executor.spin_until_future_complete(future, std::chrono::seconds(3)) !=
+        rclcpp::FutureReturnCode::SUCCESS) {
+      return nullptr;
+    }
+    return future.get();
+  };
 
   // ==========================================================================
   // [Act & Assert] 1. Scanning is running before the standby request
@@ -222,7 +226,12 @@ TEST_F(RplidarNodeTest, StandbyServiceTogglesScanning) {
   // ==========================================================================
   // [Act & Assert] 2. stop_motor -> publication stops, node stays ACTIVE
   // ==========================================================================
-  EXPECT_TRUE(call_service(stop_client)) << "'stop_motor' call timed out.";
+  auto stop_response = call_service(stop_client);
+  ASSERT_NE(stop_response, nullptr) << "'stop_motor' call timed out.";
+  EXPECT_TRUE(stop_response->success)
+      << "'stop_motor' was refused: " << stop_response->message;
+  EXPECT_FALSE(stop_response->message.empty())
+      << "'stop_motor' must explain what it did.";
 
   // Let the scan thread observe the request and drain any in-flight message.
   spin_for(std::chrono::milliseconds(300));
@@ -237,7 +246,10 @@ TEST_F(RplidarNodeTest, StandbyServiceTogglesScanning) {
   // ==========================================================================
   // [Act & Assert] 3. start_motor -> publication resumes
   // ==========================================================================
-  EXPECT_TRUE(call_service(start_client)) << "'start_motor' call timed out.";
+  auto start_response = call_service(start_client);
+  ASSERT_NE(start_response, nullptr) << "'start_motor' call timed out.";
+  EXPECT_TRUE(start_response->success)
+      << "'start_motor' was refused: " << start_response->message;
 
   scan_count = 0;
   spin_for(std::chrono::seconds(2));
@@ -385,7 +397,7 @@ TEST_F(RplidarNodeTest, AutoStandbyIgnoresStopMotorService) {
       [&scan_count](sensor_msgs::msg::LaserScan::SharedPtr) { scan_count++; });
 
   auto stop_client =
-      client_node->create_client<std_srvs::srv::Empty>("stop_motor");
+      client_node->create_client<std_srvs::srv::Trigger>("stop_motor");
 
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(node->get_node_base_interface());
@@ -403,13 +415,19 @@ TEST_F(RplidarNodeTest, AutoStandbyIgnoresStopMotorService) {
   spin_for(std::chrono::seconds(2));
   ASSERT_GT(scan_count.load(), 0) << "No scans published with a subscriber.";
 
-  // The service call is accepted at the transport level, but ignored.
+  // The call is served, but the request itself must be refused.
   ASSERT_TRUE(stop_client->wait_for_service(std::chrono::seconds(3)));
   auto future = stop_client->async_send_request(
-      std::make_shared<std_srvs::srv::Empty::Request>());
-  EXPECT_EQ(
+      std::make_shared<std_srvs::srv::Trigger::Request>());
+  ASSERT_EQ(
       executor.spin_until_future_complete(future, std::chrono::seconds(3)),
       rclcpp::FutureReturnCode::SUCCESS);
+
+  auto response = future.get();
+  EXPECT_FALSE(response->success)
+      << "'stop_motor' must report failure while 'auto_standby' is enabled.";
+  EXPECT_NE(response->message.find("auto_standby"), std::string::npos)
+      << "The refusal should name the reason. Got: " << response->message;
 
   spin_for(std::chrono::milliseconds(500));
   scan_count = 0;
