@@ -85,6 +85,7 @@
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <std_srvs/srv/empty.hpp>
 #include <thread>
 #include <vector>
 
@@ -92,7 +93,14 @@
 
 namespace rplidar_driver {
 
-enum class DriverState { CONNECTING, CHECK_HEALTH, WARMUP, RUNNING, RESETTING };
+enum class DriverState {
+  CONNECTING,
+  CHECK_HEALTH,
+  WARMUP,
+  RUNNING,
+  RESETTING,
+  STANDBY
+};
 /**
  * @class RPlidarNode
  * @brief Managed ROS 2 Lifecycle node for Slamtec RPLIDAR devices.
@@ -244,6 +252,27 @@ private:
    * The loop terminates when @ref is_scanning_ is set to false.
    */
   void scan_loop();
+
+  /**
+   * @brief Service callback requesting the STANDBY state (motor off).
+   *
+   * The request is only recorded here; the actual transition is performed by
+   * @ref scan_loop() so that the FSM stays owned by a single thread.
+   */
+  void handle_stop_motor(
+      const std::shared_ptr<rmw_request_id_t> request_header,
+      const std::shared_ptr<std_srvs::srv::Empty::Request> request,
+      std::shared_ptr<std_srvs::srv::Empty::Response> response);
+
+  /**
+   * @brief Service callback leaving the STANDBY state (motor on).
+   *
+   * @see handle_stop_motor()
+   */
+  void handle_start_motor(
+      const std::shared_ptr<rmw_request_id_t> request_header,
+      const std::shared_ptr<std_srvs::srv::Empty::Request> request,
+      std::shared_ptr<std_srvs::srv::Empty::Response> response);
 
   /**
    * @brief Publish LaserScan & PointCloud2 (if enabled) messages.
@@ -421,6 +450,12 @@ private:
   /// Handle for the dynamic parameter callback registration.
   OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 
+  /// Service putting the device into STANDBY (rplidar_ros compatible name).
+  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr stop_motor_service_;
+
+  /// Service leaving STANDBY (rplidar_ros compatible name).
+  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr start_motor_service_;
+
   /// Diagnostic updater instance used to report node and device health.
   diagnostic_updater::Updater diagnostic_updater_;
 
@@ -432,6 +467,9 @@ private:
 
   /// share fsm state across threads
   std::atomic<DriverState> current_state_{DriverState::CONNECTING};
+
+  /// Requested standby state, consumed by @ref scan_loop() on each iteration.
+  std::atomic<bool> standby_requested_{false};
 
   /// Mutex protecting access to the driver instance from multiple threads.
   std::mutex driver_mutex_;

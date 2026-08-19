@@ -1,3 +1,4 @@
+#include <atomic>
 #include <future>
 #include <gtest/gtest.h>
 #include <lifecycle_msgs/msg/state.hpp>
@@ -5,6 +6,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
+#include <std_srvs/srv/empty.hpp>
 
 #include "rplidar_node.hpp"
 
@@ -147,6 +149,97 @@ TEST_F(RplidarNodeTest, ScanPublicationCheck) {
   // ==========================================================================
   EXPECT_TRUE(message_received)
       << "Timeout: Failed to receive /scan topic within 3 seconds.";
+
+  // Clean shutdown
+  node->trigger_transition(
+      rclcpp_lifecycle::Transition(Transition::TRANSITION_DEACTIVATE));
+}
+
+/**
+ * @brief [Integration Test] Standby Mode
+ * Verifies that the 'stop_motor' service suspends scan publication without
+ * leaving the ACTIVE lifecycle state, and that 'start_motor' resumes it.
+ */
+TEST_F(RplidarNodeTest, StandbyServiceTogglesScanning) {
+  // ==========================================================================
+  // [Arrange] Active node in dummy mode + a client node for the services
+  // ==========================================================================
+  rclcpp::NodeOptions options;
+  options.append_parameter_override("dummy_mode", true);
+
+  auto node = std::make_shared<rplidar_driver::RPlidarNode>(options);
+  auto client_node = std::make_shared<rclcpp::Node>("standby_test_client");
+
+  node->trigger_transition(
+      rclcpp_lifecycle::Transition(Transition::TRANSITION_CONFIGURE));
+  node->trigger_transition(
+      rclcpp_lifecycle::Transition(Transition::TRANSITION_ACTIVATE));
+
+  std::atomic<int> scan_count{0};
+  auto sub = client_node->create_subscription<sensor_msgs::msg::LaserScan>(
+      "scan", rclcpp::SensorDataQoS(),
+      [&scan_count](sensor_msgs::msg::LaserScan::SharedPtr) { scan_count++; });
+
+  auto stop_client =
+      client_node->create_client<std_srvs::srv::Empty>("stop_motor");
+  auto start_client =
+      client_node->create_client<std_srvs::srv::Empty>("start_motor");
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node->get_node_base_interface());
+  executor.add_node(client_node);
+
+  // Spin for a fixed wall-clock duration, draining all pending callbacks.
+  auto spin_for = [&executor](std::chrono::milliseconds duration) {
+    const auto deadline = std::chrono::steady_clock::now() + duration;
+    while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline) {
+      executor.spin_some();
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+  };
+
+  // Call a service and pump the executor until the response arrives.
+  auto call_service =
+      [&executor](rclcpp::Client<std_srvs::srv::Empty>::SharedPtr client) {
+        EXPECT_TRUE(client->wait_for_service(std::chrono::seconds(3)))
+            << "Service '" << client->get_service_name() << "' never appeared.";
+
+        auto future = client->async_send_request(
+            std::make_shared<std_srvs::srv::Empty::Request>());
+        return executor.spin_until_future_complete(future,
+                                                   std::chrono::seconds(3)) ==
+               rclcpp::FutureReturnCode::SUCCESS;
+      };
+
+  // ==========================================================================
+  // [Act & Assert] 1. Scanning is running before the standby request
+  // ==========================================================================
+  spin_for(std::chrono::milliseconds(500));
+  EXPECT_GT(scan_count.load(), 0) << "No scans published before standby.";
+
+  // ==========================================================================
+  // [Act & Assert] 2. stop_motor -> publication stops, node stays ACTIVE
+  // ==========================================================================
+  EXPECT_TRUE(call_service(stop_client)) << "'stop_motor' call timed out.";
+
+  // Let the scan thread observe the request and drain any in-flight message.
+  spin_for(std::chrono::milliseconds(300));
+
+  scan_count = 0;
+  spin_for(std::chrono::milliseconds(500));
+  EXPECT_EQ(scan_count.load(), 0) << "Scans still published while in standby.";
+
+  EXPECT_EQ(node->get_current_state().id(), State::PRIMARY_STATE_ACTIVE)
+      << "Standby must not leave the ACTIVE lifecycle state.";
+
+  // ==========================================================================
+  // [Act & Assert] 3. start_motor -> publication resumes
+  // ==========================================================================
+  EXPECT_TRUE(call_service(start_client)) << "'start_motor' call timed out.";
+
+  scan_count = 0;
+  spin_for(std::chrono::seconds(2));
+  EXPECT_GT(scan_count.load(), 0) << "Scans did not resume after start_motor.";
 
   // Clean shutdown
   node->trigger_transition(

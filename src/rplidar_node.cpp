@@ -139,6 +139,19 @@ RPlidarNode::on_configure(const rclcpp_lifecycle::State &) {
       &RPlidarNode::parameters_callback, this, std::placeholders::_1));
 
   // ------------------------------------------------------------------------
+  // 3b. Standby services (names kept compatible with rplidar_ros)
+  // ------------------------------------------------------------------------
+  stop_motor_service_ = this->create_service<std_srvs::srv::Empty>(
+      "stop_motor",
+      std::bind(&RPlidarNode::handle_stop_motor, this, std::placeholders::_1,
+                std::placeholders::_2, std::placeholders::_3));
+
+  start_motor_service_ = this->create_service<std_srvs::srv::Empty>(
+      "start_motor",
+      std::bind(&RPlidarNode::handle_start_motor, this, std::placeholders::_1,
+                std::placeholders::_2, std::placeholders::_3));
+
+  // ------------------------------------------------------------------------
   // 4. QoS setup for LaserScan publisher
   // ------------------------------------------------------------------------
   std::string qos_policy;
@@ -223,6 +236,10 @@ RPlidarNode::on_activate(const rclcpp_lifecycle::State &state) {
   if (params_.publish_point_cloud) {
     cloud_pub_->on_activate();
   }
+  // Activation always means "start scanning": a standby request issued during
+  // a previous ACTIVE period must not survive the lifecycle transition.
+  standby_requested_ = false;
+
   // Start scan loop thread.
   is_scanning_ = true;
   scan_thread_ = std::thread(&RPlidarNode::scan_loop, this);
@@ -258,6 +275,9 @@ RPlidarNode::on_cleanup(const rclcpp_lifecycle::State &) {
 
   scan_pub_.reset();
   cloud_pub_.reset();
+
+  stop_motor_service_.reset();
+  start_motor_service_.reset();
 
   if (driver_) {
     driver_->disconnect();
@@ -312,6 +332,7 @@ void RPlidarNode::init_parameters() {
  *  - WARMUP       : Start motor and configure scan mode
  *  - RUNNING      : Continuously grab scan data and publish LaserScan
  *  - RESETTING    : Recreate driver instance to recover from persistent errors
+ *  - STANDBY      : Motor stopped on user request, connection kept alive
  */
 void RPlidarNode::scan_loop() {
   // Initialize FSM state for this thread
@@ -324,6 +345,37 @@ void RPlidarNode::scan_loop() {
   while (rclcpp::ok() && is_scanning_) {
     // Read current FSM state from atomic variable
     DriverState state = current_state_.load();
+
+    // -----------------------------------------------------------------
+    // Standby requests are handled here, before the switch, so that they
+    // take precedence over any transition the FSM is about to perform.
+    // The service callbacks only set the flag; every state change stays
+    // owned by this thread.
+    // -----------------------------------------------------------------
+    const bool want_standby = standby_requested_.load();
+
+    if (want_standby && state != DriverState::STANDBY) {
+      RCLCPP_INFO(this->get_logger(),
+                  "[FSM] Entering STANDBY (stopping motor)...");
+      {
+        std::lock_guard<std::mutex> lock(driver_mutex_);
+        if (driver_) {
+          driver_->stop_motor();
+        }
+        // The new-protocol rpm fixup must run again after the next start.
+        initial_reset_required_ = true;
+      }
+      error_count = 0;
+      state = DriverState::STANDBY;
+      current_state_.store(state);
+    } else if (!want_standby && state == DriverState::STANDBY) {
+      // Re-enter through CHECK_HEALTH: it validates the device and falls
+      // back to CONNECTING if it went away while we were idle.
+      RCLCPP_INFO(this->get_logger(),
+                  "[FSM] Leaving STANDBY (restarting motor)...");
+      state = DriverState::CHECK_HEALTH;
+      current_state_.store(state);
+    }
 
     switch (state) {
     // -----------------------------------------------------------------
@@ -494,6 +546,16 @@ void RPlidarNode::scan_loop() {
       error_count = 0;
       break;
     }
+
+    // -----------------------------------------------------------------
+    // State 6: STANDBY
+    // -----------------------------------------------------------------
+    // Motor is off and the connection is kept open. Nothing to do here:
+    // the loop is left through the standby handling above, and the tail
+    // sleep keeps CPU usage low.
+    case DriverState::STANDBY: {
+      break;
+    }
     }
 
     // Reduce CPU usage when not actively scanning
@@ -503,6 +565,28 @@ void RPlidarNode::scan_loop() {
   }
 
   RCLCPP_INFO(this->get_logger(), "[FSM] Scan loop terminated.");
+}
+
+// ============================================================================
+// Standby Services
+// ============================================================================
+
+void RPlidarNode::handle_stop_motor(
+    const std::shared_ptr<rmw_request_id_t>,
+    const std::shared_ptr<std_srvs::srv::Empty::Request>,
+    std::shared_ptr<std_srvs::srv::Empty::Response>) {
+
+  RCLCPP_INFO(this->get_logger(), "[Standby] stop_motor requested.");
+  standby_requested_.store(true);
+}
+
+void RPlidarNode::handle_start_motor(
+    const std::shared_ptr<rmw_request_id_t>,
+    const std::shared_ptr<std_srvs::srv::Empty::Request>,
+    std::shared_ptr<std_srvs::srv::Empty::Response>) {
+
+  RCLCPP_INFO(this->get_logger(), "[Standby] start_motor requested.");
+  standby_requested_.store(false);
 }
 
 // ============================================================================
@@ -553,6 +637,11 @@ void RPlidarNode::update_diagnostics(
                  "Hardware Error / Resetting");
     stat.add("Connection", "Disconnected / Resetting");
     stat.add("Health Code", "Error");
+  } else if (state == DriverState::STANDBY) {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK,
+                 "Standby (motor off)");
+    stat.add("Connection", "Connected (Motor Stopped)");
+    stat.add("Health Code", "OK (Standby)");
   } else {
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR,
                  "Unknown State");
